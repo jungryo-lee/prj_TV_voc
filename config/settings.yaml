@@ -1,0 +1,136 @@
+path:
+  project_root: /Workspace/Users/your.name@lge.com/prj_TV_voc
+  env: /Workspace/Users/your.name@lge.com/prj_TV_voc/.env
+  prompts: /Workspace/Users/your.name@lge.com/prj_TV_voc/config/prompts.yaml
+
+runtime:
+  mode: test
+  timezone: Asia/Seoul
+  run_date: null
+  run_id_prefix: tv_voc
+
+unity_catalog:
+  catalog: sandbox
+  schema: z_jungryo_lee
+
+source:
+  raw_review_table: kic_data_ods.buzzmetrix.buzzmetrix
+  model_meta_table: sandbox.z_jungryo_lee.buzz_model_meta
+  sentiment_source_table: sandbox.z_jungryo_lee.buzz_sc_score_dataset
+
+reference:
+  category_rule_table: sandbox.z_jungryo_lee.tv_voc_category_rule_master
+  category_master_table: sandbox.z_jungryo_lee.tv_voc_category_master
+  taxonomy_definition_table: sandbox.z_jungryo_lee.tv_voc_taxonomy_definition
+  prompt_registry_table: sandbox.z_jungryo_lee.tv_voc_prompt_registry
+
+tables:
+  outputs:
+    rule_profile: sandbox.z_jungryo_lee.tv_voc_rule_profile
+    clue_keyword: sandbox.z_jungryo_lee.tv_voc_clue_keyword
+    topic_pool: sandbox.z_jungryo_lee.tv_voc_topic_pool
+    classification_detail: sandbox.z_jungryo_lee.tv_voc_classification_detail
+    classification_summary: sandbox.z_jungryo_lee.tv_voc_classification_summary
+    driver_input: sandbox.z_jungryo_lee.tv_voc_driver_input
+    weighted_corr: sandbox.z_jungryo_lee.tv_voc_weighted_corr
+    weighted_regression: sandbox.z_jungryo_lee.tv_voc_weighted_regression
+    driver_selection: sandbox.z_jungryo_lee.tv_voc_driver_selection
+    ai_insight: sandbox.z_jungryo_lee.tv_voc_ai_insight
+    dashboard_export: sandbox.z_jungryo_lee.tv_voc_dashboard_export
+
+  logs:
+    pipeline_progress: sandbox.z_jungryo_lee.tv_voc_pipeline_progress
+    pipeline_failed: sandbox.z_jungryo_lee.tv_voc_pipeline_failed
+    pipeline_run_log: sandbox.z_jungryo_lee.tv_voc_pipeline_run_log
+
+bedrock:
+  region_env: AWS_REGION
+  access_key_env: AWS_ACCESS_KEY_ID
+  secret_key_env: AWS_SECRET_ACCESS_KEY
+  model_id: apac.anthropic.claude-sonnet-4-20250514-v1:0
+  max_retries: 3
+  backoff_base: 1.8
+  timeout_seconds: 60
+  inference:
+    temperature: 0.0
+    top_p: 0.9
+    max_tokens: 2200
+
+version:
+  prompt_version: v1
+  taxonomy_version: v1
+  model_version: claude-sonnet-4
+  pipeline_version: v1
+
+metadata_columns:
+  run_id: run_id
+  run_date: run_date
+  pipeline_stage: pipeline_stage
+  prompt_version: prompt_version
+  taxonomy_version: taxonomy_version
+  model_version: model_version
+  pipeline_version: pipeline_version
+  source_period_start: source_period_start
+  source_period_end: source_period_end
+  is_latest: is_latest
+  created_at: created_at
+  created_by: created_by
+
+taxonomy:
+  target_sentiments: [1, -1]
+  exclude_category_prefix: "***"
+  min_group_size: 100
+  max_sample_rows: 1000
+  max_rule_sample_rows: 800
+  min_final_topics: 7
+  max_final_topics: 17
+  include_overall_category: true
+  review_required_default: true
+
+rule_profile:
+  enabled: true
+  resume_from_checkpoint: true
+  limit_group_count: null
+  prompt_key: rule_profile_system
+  output_json_schema: rule_profile_v1
+
+topic_pool:
+  enabled: false
+  prompt_key: topic_pool_system
+  output_json_schema: topic_pool_v1
+
+classification:
+  enabled: false
+  prompt_key: topic_classification_system
+  max_sample_rows_per_group: 1000
+  classify_batch_size: 25
+  memo_summarize_threshold: 200
+  summarize_batch_size: 20
+  sparse_topic_min_rows: 10
+
+driver_analysis:
+  enabled: false
+  corr_threshold: 0.1
+  pvalue_max: 0.1
+  abs_coef_threshold: 0.1
+  weight_method: sqrt_total_count
+  group_dims:
+    - all
+    - country
+    - brand_name
+    - d_type
+    - year
+
+insight:
+  enabled: false
+  prompt_key: ai_insight_system
+  max_drivers_per_key_full: 4
+  max_drivers_per_key_compact: 3
+  max_diff_stats_full: 10
+
+pipeline:
+  overwrite_output: false
+  save_failed_rows: true
+  save_progress: true
+  require_human_review_for_new_category: true
+  latest_flag_strategy: true
