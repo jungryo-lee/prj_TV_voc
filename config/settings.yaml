@@ -1,7 +1,7 @@
 path:
-  project_root: /Workspace/Users/your.name@lge.com/prj_TV_voc
-  env: /Workspace/Users/your.name@lge.com/prj_TV_voc/.env
-  prompts: /Workspace/Users/your.name@lge.com/prj_TV_voc/config/prompts.yaml
+  project_root: /Workspace/Users/jungryo.lee@lge.com/prj_TV_voc
+  env: /Workspace/Users/jungryo.lee@lge.com/prj_TV_voc/.env
+  prompts: /Workspace/Users/jungryo.lee@lge.com/prj_TV_voc/config/prompts.yaml
 
 runtime:
   mode: test
@@ -47,7 +47,7 @@ bedrock:
   region_env: AWS_REGION
   access_key_env: AWS_ACCESS_KEY_ID
   secret_key_env: AWS_SECRET_ACCESS_KEY
-  model_id: apac.anthropic.claude-sonnet-4-20250514-v1:0
+  model_id: apac.anthropic.claude-sonnet-4-6
   max_retries: 3
   backoff_base: 1.8
   timeout_seconds: 60
