@@ -43,11 +43,9 @@ tables:
     pipeline_failed: sandbox.z_jungryo_lee.tv_voc_pipeline_failed
     pipeline_run_log: sandbox.z_jungryo_lee.tv_voc_pipeline_run_log
 
-bedrock:
-  region_env: AWS_REGION
-  access_key_env: AWS_ACCESS_KEY_ID
-  secret_key_env: AWS_SECRET_ACCESS_KEY
-  model_id: apac.anthropic.claude-sonnet-4-6
+llm:
+  provider: databricks
+  endpoint: databricks-claude-sonnet-4-6
   max_retries: 3
   backoff_base: 1.8
   timeout_seconds: 60
