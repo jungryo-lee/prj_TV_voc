@@ -8,8 +8,62 @@ from typing import Any
 
 from pyspark.sql import DataFrame, SparkSession
 from pyspark.sql import functions as F
+from pyspark.sql import types as T
 
 from common.config_loader import get_output_table
+
+
+RULE_PROFILE_WRITE_SCHEMA = T.StructType(
+    [
+        T.StructField("cate_1_depth", T.StringType(), True),
+        T.StructField("cate_2_depth", T.StringType(), True),
+        T.StructField("sc_measurement", T.IntegerType(), True),
+        T.StructField("sample_memo_count", T.IntegerType(), True),
+        T.StructField("overall_topic_name", T.StringType(), True),
+        T.StructField("overall_allowed_rule", T.StringType(), True),
+        T.StructField("overall_block_rule", T.StringType(), True),
+        T.StructField("overall_sentiment_terms_json", T.StringType(), True),
+        T.StructField("feature_hint_terms_json", T.StringType(), True),
+        T.StructField("reason_signal_terms_json", T.StringType(), True),
+        T.StructField("non_overall_examples_json", T.StringType(), True),
+        T.StructField("category_seed_summary", T.StringType(), True),
+        T.StructField("category_seed_has_static_seed", T.BooleanType(), True),
+        T.StructField(
+            "category_seed_static_feature_hint_terms_json",
+            T.StringType(),
+            True,
+        ),
+        T.StructField("category_seed_feature_hint_terms_json", T.StringType(), True),
+        T.StructField("category_seed_reason_signal_terms_json", T.StringType(), True),
+        T.StructField(
+            "category_seed_overall_sentiment_terms_json",
+            T.StringType(),
+            True,
+        ),
+        T.StructField(
+            "category_seed_candidate_topic_labels_json",
+            T.StringType(),
+            True,
+        ),
+        T.StructField(
+            "category_seed_sample_non_overall_memos_json",
+            T.StringType(),
+            True,
+        ),
+        T.StructField("run_id", T.StringType(), True),
+        T.StructField("run_date", T.StringType(), True),
+        T.StructField("pipeline_stage", T.StringType(), True),
+        T.StructField("prompt_version", T.StringType(), True),
+        T.StructField("taxonomy_version", T.StringType(), True),
+        T.StructField("model_version", T.StringType(), True),
+        T.StructField("pipeline_version", T.StringType(), True),
+        T.StructField("source_period_start", T.StringType(), True),
+        T.StructField("source_period_end", T.StringType(), True),
+        T.StructField("is_latest", T.BooleanType(), True),
+        T.StructField("created_at", T.StringType(), True),
+        T.StructField("created_by", T.StringType(), True),
+    ]
+)
 
 
 def _clean_text(value: Any) -> str:
@@ -136,7 +190,7 @@ def build_rule_profile_spark_df(
         pipeline_stage=pipeline_stage,
         is_latest=is_latest,
     )
-    return spark.createDataFrame(rows)
+    return spark.createDataFrame(rows, schema=RULE_PROFILE_WRITE_SCHEMA)
 
 
 def _delete_existing_group_rows(
