@@ -15,16 +15,42 @@ from common.config_loader import load_config
 def _parse_json_loose(text: str) -> dict[str, Any]:
     """Extract a JSON object from a loose LLM response."""
     raw = (text or "").strip()
+    if not raw:
+        raise ValueError("LLM returned empty text; cannot parse JSON.")
+
     fenced = re.search(r"```(?:json)?\s*([\s\S]*?)\s*```", raw, re.IGNORECASE)
     if fenced:
         raw = fenced.group(1).strip()
 
-    start = raw.find("{")
-    end = raw.rfind("}")
-    if start >= 0 and end > start:
-        raw = raw[start : end + 1]
+    raw = re.sub(r"^\s*json\s*", "", raw, flags=re.IGNORECASE).strip()
 
-    return json.loads(raw)
+    candidates = [raw]
+
+    obj_start = raw.find("{")
+    obj_end = raw.rfind("}")
+    if obj_start >= 0 and obj_end > obj_start:
+        candidates.append(raw[obj_start : obj_end + 1])
+
+    arr_start = raw.find("[")
+    arr_end = raw.rfind("]")
+    if arr_start >= 0 and arr_end > arr_start:
+        candidates.append(raw[arr_start : arr_end + 1])
+
+    last_error: Exception | None = None
+    for candidate in candidates:
+        cleaned = candidate.strip()
+        if not cleaned:
+            continue
+        cleaned = re.sub(r",\s*([}\]])", r"\1", cleaned)
+        try:
+            return json.loads(cleaned)
+        except Exception as exc:
+            last_error = exc
+
+    preview = raw[:500].replace("\n", "\\n")
+    raise ValueError(
+        f"Failed to parse JSON from LLM response. preview={preview!r}, error={last_error!r}"
+    )
 
 
 def _extract_text_from_response(response: Any) -> str:
@@ -161,14 +187,24 @@ class DatabricksLLMClient:
         top_p: float | None = None,
     ) -> dict[str, Any]:
         """Run a Databricks LLM call and parse the response as JSON."""
-        text = self.converse(
-            system_prompt=system_prompt,
-            user_prompt=user_prompt,
-            max_tokens=max_tokens,
-            temperature=temperature,
-            top_p=top_p,
-        )
-        return _parse_json_loose(text)
+        last_error: Exception | None = None
+
+        for attempt in range(self.max_retries):
+            text = self.converse(
+                system_prompt=system_prompt,
+                user_prompt=user_prompt,
+                max_tokens=max_tokens,
+                temperature=temperature,
+                top_p=top_p,
+            )
+            try:
+                return _parse_json_loose(text)
+            except Exception as exc:
+                last_error = exc
+                if attempt < self.max_retries - 1:
+                    time.sleep(self.backoff_base ** attempt)
+
+        raise RuntimeError(f"Databricks LLM JSON parse failed: {last_error!r}")
 
 
 def get_llm_client(
