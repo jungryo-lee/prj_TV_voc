@@ -800,6 +800,19 @@ def get_static_category_feature_patterns(
     return CATEGORY_FEATURE_PATTERNS.get((cate_1_depth, cate_2_depth), [])
 
 
+def get_rule_profile_prompt_feature_hints(
+    cate_1_depth: str,
+    cate_2_depth: str,
+    *,
+    max_items: int = 40,
+) -> list[str]:
+    """Return a compact feature-hint list for rule-profile prompts."""
+    static_patterns = get_static_category_feature_patterns(cate_1_depth, cate_2_depth)
+    if static_patterns:
+        return static_patterns[:max_items]
+    return COMMON_FEATURE_PATTERNS[:max_items]
+
+
 def has_static_category_patterns(cate_1_depth: str, cate_2_depth: str) -> bool:
     """Return whether static category patterns exist for the category key."""
     return (cate_1_depth, cate_2_depth) in CATEGORY_FEATURE_PATTERNS
@@ -814,7 +827,11 @@ def build_rule_profile_messages(
     """Build messages for rule-profile generation."""
     polarity_label = sc_label(sc_measurement)
     overall_name = overall_topic_name(sc_measurement)
-    feature_patterns = get_feature_patterns(cate_1_depth, cate_2_depth)
+    feature_patterns = get_rule_profile_prompt_feature_hints(
+        cate_1_depth,
+        cate_2_depth,
+        max_items=40,
+    )
 
     system = f"""
 You are a VOC rule designer for TV review topic classification.

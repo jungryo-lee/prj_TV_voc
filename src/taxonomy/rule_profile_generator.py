@@ -80,19 +80,28 @@ def merge_category_seed_into_rule_profile_messages(
 
     if category_seed.get("static_feature_hint_terms"):
         seed_lines.append(
-            f"- static_feature_hint_terms: {category_seed['static_feature_hint_terms']}"
+            f"- static_feature_hint_terms: {category_seed['static_feature_hint_terms'][:25]}"
         )
 
-    for key in [
-        "feature_hint_terms",
+    keys_to_merge = [
         "reason_signal_terms",
         "overall_sentiment_terms",
-        "candidate_topic_labels",
         "sample_non_overall_memos",
-    ]:
+    ]
+
+    if not category_seed.get("has_static_seed"):
+        keys_to_merge = [
+            "feature_hint_terms",
+            "reason_signal_terms",
+            "overall_sentiment_terms",
+            "candidate_topic_labels",
+            "sample_non_overall_memos",
+        ]
+
+    for key in keys_to_merge:
         values = category_seed.get(key)
         if values:
-            seed_lines.append(f"- {key}: {values}")
+            seed_lines.append(f"- {key}: {values[:20]}")
 
     merged = list(messages)
     merged[0] = {
