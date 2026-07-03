@@ -6,7 +6,7 @@ from typing import Any
 
 from common.llm_client import DatabricksLLMClient, get_llm_client
 from taxonomy.category_pattern_generator import get_effective_category_pattern_seed
-from taxonomy.group_sampler import collect_rule_profile_sample_memos
+from taxonomy.group_sampler import collect_diverse_rule_profile_prompt_memos
 from taxonomy.prompt_builder import build_rule_profile_messages, overall_topic_name
 
 
@@ -40,6 +40,21 @@ def _clean_term_list(
             break
 
     return cleaned
+
+
+def get_rule_profile_prompt_memo_limit(
+    config: dict[str, Any],
+    *,
+    model_key: str | None,
+) -> int:
+    """Return the configured prompt memo cap for the selected model."""
+    rule_profile_cfg = config.get("rule_profile", {})
+    max_by_model = rule_profile_cfg.get("max_prompt_memos_by_model", {}) or {}
+
+    if model_key and model_key in max_by_model:
+        return int(max_by_model[model_key])
+
+    return int(rule_profile_cfg.get("max_prompt_memos_default", 200))
 
 
 def merge_category_seed_into_rule_profile_messages(
@@ -171,14 +186,20 @@ def generate_rule_profile_for_group(
 ) -> dict[str, Any]:
     """Generate a rule profile for one category/sentiment group."""
     client = llm_client or get_llm_client(config=config, model_key=model_key)
+    selected_model_key = model_key or client.model_key
+    prompt_memo_limit = get_rule_profile_prompt_memo_limit(
+        config,
+        model_key=selected_model_key,
+    )
 
     if sample_memos is None:
-        sample_memos = collect_rule_profile_sample_memos(
+        sample_memos = collect_diverse_rule_profile_prompt_memos(
             spark=spark,
             config=config,
             cate_1_depth=cate_1_depth,
             cate_2_depth=cate_2_depth,
             sc_measurement=sc_measurement,
+            max_prompt_rows=prompt_memo_limit,
             sample_seed=sample_seed or "seed_20260420",
         )
 
@@ -191,7 +212,7 @@ def generate_rule_profile_for_group(
         llm_client=client,
         sample_memos=sample_memos,
         sample_seed=sample_seed,
-        model_key=model_key,
+        model_key=selected_model_key,
         force_generate=force_seed_generation,
     )
 

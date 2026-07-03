@@ -112,6 +112,10 @@ select
     cate_1_depth,
     cate_2_depth,
     sc_measurement,
+    year,
+    country,
+    brand_name,
+    d_type,
     memo
 from {source_table}
 where cate_1_depth = '{cate_1}'
@@ -172,6 +176,108 @@ def load_group_sample_df(
     return sampled_df
 
 
+def load_diverse_prompt_sample_df(
+    spark: SparkSession,
+    config: dict[str, Any],
+    cate_1_depth: str,
+    cate_2_depth: str,
+    sc_measurement: int,
+    max_prompt_rows: int,
+    sample_seed: str = DEFAULT_SAMPLE_SEED,
+) -> DataFrame:
+    """Load a diverse prompt sample mixed across metadata and memo lengths."""
+    stage_cfg = get_rule_profile_stage_config(config)
+    base_df = load_group_sample_df(
+        spark=spark,
+        config=config,
+        cate_1_depth=cate_1_depth,
+        cate_2_depth=cate_2_depth,
+        sc_measurement=sc_measurement,
+        max_rows=int(stage_cfg["max_rule_sample_rows"]),
+        sample_seed=sample_seed,
+    )
+
+    enriched_df = (
+        base_df.withColumn(
+            "_year_group",
+            F.coalesce(F.col("year").cast("string"), F.lit("unknown_year")),
+        )
+        .withColumn(
+            "_country_group",
+            F.coalesce(F.col("country").cast("string"), F.lit("unknown_country")),
+        )
+        .withColumn(
+            "_brand_group",
+            F.coalesce(F.col("brand_name").cast("string"), F.lit("unknown_brand")),
+        )
+        .withColumn(
+            "_dtype_group",
+            F.coalesce(F.col("d_type").cast("string"), F.lit("unknown_dtype")),
+        )
+        .withColumn("_memo_len", F.length(F.coalesce(F.col("memo_norm"), F.col("memo"))))
+        .withColumn(
+            "_memo_len_bucket",
+            F.when(F.col("_memo_len") <= 25, F.lit("short"))
+            .when(F.col("_memo_len") <= 80, F.lit("medium"))
+            .otherwise(F.lit("long")),
+        )
+        .withColumn(
+            "_stratum_key",
+            F.concat_ws(
+                "||",
+                F.col("_year_group"),
+                F.col("_country_group"),
+                F.col("_brand_group"),
+                F.col("_dtype_group"),
+                F.col("_memo_len_bucket"),
+            ),
+        )
+    )
+
+    within_stratum_window = Window.partitionBy("_stratum_key").orderBy(
+        F.md5(
+            F.concat(
+                F.coalesce(F.col("memo_id"), F.lit("")),
+                F.lit("||"),
+                F.lit(sample_seed),
+            )
+        )
+    )
+    round_robin_window = Window.orderBy(
+        F.col("_within_stratum_rn").asc(),
+        F.md5(
+            F.concat(
+                F.col("_stratum_key"),
+                F.lit("||"),
+                F.coalesce(F.col("memo_id"), F.lit("")),
+                F.lit("||"),
+                F.lit(sample_seed),
+            )
+        ).asc(),
+    )
+
+    return (
+        enriched_df.withColumn(
+            "_within_stratum_rn",
+            F.row_number().over(within_stratum_window),
+        )
+        .withColumn("_prompt_rn", F.row_number().over(round_robin_window))
+        .where(F.col("_prompt_rn") <= int(max_prompt_rows))
+        .orderBy("_prompt_rn")
+        .drop(
+            "_year_group",
+            "_country_group",
+            "_brand_group",
+            "_dtype_group",
+            "_memo_len",
+            "_memo_len_bucket",
+            "_stratum_key",
+            "_within_stratum_rn",
+            "_prompt_rn",
+        )
+    )
+
+
 def collect_group_sample_memos(
     spark: SparkSession,
     config: dict[str, Any],
@@ -213,6 +319,28 @@ def collect_rule_profile_sample_memos(
         max_rows=int(stage_cfg["max_rule_sample_rows"]),
         sample_seed=sample_seed,
     )
+
+
+def collect_diverse_rule_profile_prompt_memos(
+    spark: SparkSession,
+    config: dict[str, Any],
+    cate_1_depth: str,
+    cate_2_depth: str,
+    sc_measurement: int,
+    max_prompt_rows: int,
+    sample_seed: str = DEFAULT_SAMPLE_SEED,
+) -> list[str]:
+    """Collect a prompt-sized memo list with mixed metadata/length coverage."""
+    sample_df = load_diverse_prompt_sample_df(
+        spark=spark,
+        config=config,
+        cate_1_depth=cate_1_depth,
+        cate_2_depth=cate_2_depth,
+        sc_measurement=sc_measurement,
+        max_prompt_rows=max_prompt_rows,
+        sample_seed=sample_seed,
+    )
+    return [row["memo"] for row in sample_df.toLocalIterator()]
 
 
 def collect_topic_pool_sample_memos(

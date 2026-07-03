@@ -101,6 +101,10 @@ rule_profile:
   limit_group_count: null
   prompt_key: rule_profile_system
   output_json_schema: rule_profile_v1
+  max_prompt_memos_default: 200
+  max_prompt_memos_by_model:
+    sonnet_46: 200
+    gpt_55: 200
 
 topic_pool:
   enabled: false
