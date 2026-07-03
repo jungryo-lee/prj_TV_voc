@@ -115,7 +115,7 @@ select
     year,
     country,
     brand_name,
-    d_type,
+    device_type,
     memo
 from {source_table}
 where cate_1_depth = '{cate_1}'
@@ -212,7 +212,7 @@ def load_diverse_prompt_sample_df(
         )
         .withColumn(
             "_dtype_group",
-            F.coalesce(F.col("d_type").cast("string"), F.lit("unknown_dtype")),
+            F.coalesce(F.col("device_type").cast("string"), F.lit("unknown_dtype")),
         )
         .withColumn("_memo_len", F.length(F.coalesce(F.col("memo_norm"), F.col("memo"))))
         .withColumn(

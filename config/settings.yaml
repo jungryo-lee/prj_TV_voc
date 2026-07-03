@@ -130,7 +130,7 @@ driver_analysis:
     - all
     - country
     - brand_name
-    - d_type
+    - device_type
     - year
 
 insight:
