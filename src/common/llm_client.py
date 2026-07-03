@@ -50,19 +50,35 @@ def _extract_text_from_response(response: Any) -> str:
 class DatabricksLLMClient:
     """Thin wrapper around Databricks hosted LLM endpoints."""
 
-    def __init__(self, config: dict[str, Any] | None = None):
+    def __init__(
+        self,
+        config: dict[str, Any] | None = None,
+        model_key: str | None = None,
+    ):
         self.config = config or load_config()
         llm_cfg = self.config.get("llm", {})
 
         self.provider = llm_cfg.get("provider", "databricks")
-        self.endpoint = llm_cfg.get("endpoint", "databricks-claude-sonnet-4-6")
         self.max_retries = int(llm_cfg.get("max_retries", 3))
         self.backoff_base = float(llm_cfg.get("backoff_base", 1.8))
         self.timeout_seconds = int(llm_cfg.get("timeout_seconds", 60))
-        self.inference_config = llm_cfg.get("inference", {})
 
         if self.provider != "databricks":
             raise ValueError(f"Unsupported llm.provider: {self.provider}")
+
+        selected_model_key = model_key or llm_cfg.get("default_model_key")
+        if not selected_model_key:
+            raise ValueError("llm.default_model_key or model_key is required.")
+
+        models_cfg = llm_cfg.get("models", {})
+        model_cfg = models_cfg.get(selected_model_key)
+        if not model_cfg:
+            raise KeyError(f"Unknown model_key: {selected_model_key}")
+
+        self.model_key = selected_model_key
+        self.endpoint = model_cfg["endpoint"]
+        self.model_version = model_cfg.get("model_version", selected_model_key)
+        self.inference_config = model_cfg.get("inference", {})
 
         self.client = get_deploy_client("databricks")
 
@@ -74,19 +90,27 @@ class DatabricksLLMClient:
         top_p: float | None = None,
     ) -> dict[str, Any]:
         """Build inference config with optional overrides."""
-        base = {
+        base: dict[str, Any] = {
             "max_tokens": self.inference_config.get("max_tokens", 2200),
-            "temperature": self.inference_config.get("temperature", 0.0),
         }
+
+        default_temperature = self.inference_config.get("temperature")
+        default_top_p = self.inference_config.get("top_p")
+
+        if temperature is not None:
+            base["temperature"] = temperature
+        elif default_temperature is not None:
+            base["temperature"] = default_temperature
+
+        if top_p is not None:
+            if "temperature" in base:
+                base.pop("temperature", None)
+            base["top_p"] = top_p
+        elif default_top_p is not None and "temperature" not in base:
+            base["top_p"] = default_top_p
 
         if max_tokens is not None:
             base["max_tokens"] = max_tokens
-        if temperature is not None:
-            base["temperature"] = temperature
-        if top_p is not None:
-            base["top_p"] = top_p
-        elif self.inference_config.get("top_p") is not None:
-            base["top_p"] = self.inference_config.get("top_p")
 
         return base
 
@@ -105,6 +129,7 @@ class DatabricksLLMClient:
             temperature=temperature,
             top_p=top_p,
         )
+
         payload = {
             "messages": [
                 {"role": "system", "content": system_prompt},
@@ -146,6 +171,9 @@ class DatabricksLLMClient:
         return _parse_json_loose(text)
 
 
-def get_llm_client(config: dict[str, Any] | None = None) -> DatabricksLLMClient:
+def get_llm_client(
+    config: dict[str, Any] | None = None,
+    model_key: str | None = None,
+) -> DatabricksLLMClient:
     """Factory helper for downstream modules."""
-    return DatabricksLLMClient(config=config)
+    return DatabricksLLMClient(config=config, model_key=model_key)
