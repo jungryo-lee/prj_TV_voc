@@ -107,9 +107,57 @@ rule_profile:
     gpt_55: 200
 
 topic_pool:
-  enabled: false
+  enabled: true
   prompt_key: topic_pool_system
   output_json_schema: topic_pool_v1
+  max_prompt_memos_default: 200
+  max_prompt_memos_by_model:
+    sonnet_46: 200
+    gpt_55: 200
+  raise_on_invalid_topic_count: true
+  topic_count_overrides:
+    "07. 스마트 사용성||07-01. 채널/컨텐츠 APP":
+      min_final_topics: 8
+      max_final_topics: 18
+    "07. 스마트 사용성||07-03. 메뉴 구성/UI":
+      min_final_topics: 8
+      max_final_topics: 18
+    "07. 스마트 사용성||07-04. SW/OS":
+      min_final_topics: 8
+      max_final_topics: 18
+    "07. 스마트 사용성||07-06. 리모컨 사용성":
+      min_final_topics: 8
+      max_final_topics: 18
+    "07. 스마트 사용성||07-08. 음성 인식/조작":
+      min_final_topics: 8
+      max_final_topics: 18
+    "07. 스마트 사용성||07-05. 컨텐츠 탐색 사용성":
+      min_final_topics: 6
+      max_final_topics: 14
+    "07. 스마트 사용성||07-09. 게임 기능":
+      min_final_topics: 6
+      max_final_topics: 14
+    "07. 스마트 사용성||07-11. 홈 IoT":
+      min_final_topics: 6
+      max_final_topics: 14
+    "07. 스마트 사용성||07-12. 모바일 연동":
+      min_final_topics: 6
+      max_final_topics: 14
+    "01. 사이즈||01-01. TV 사이즈":
+      min_final_topics: 4
+      max_final_topics: 8
+    "09. 친환경||09-01. 에너지 효율":
+      min_final_topics: 4
+      max_final_topics: 8
+    "10. 가격||10-01. 가격/가격대비 가치":
+      min_final_topics: 4
+      max_final_topics: 8
+    "11. 브랜드||11-01. 브랜드":
+      min_final_topics: 4
+      max_final_topics: 8
+    "13. 전반적 평가||13-01. 전반적 평가":
+      min_final_topics: 4
+      max_final_topics: 8
 
 classification:
   enabled: false

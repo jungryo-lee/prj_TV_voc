@@ -362,3 +362,25 @@ def collect_topic_pool_sample_memos(
         max_rows=int(stage_cfg["max_sample_rows"]),
         sample_seed=sample_seed,
     )
+
+
+def collect_diverse_topic_pool_prompt_memos(
+    spark: SparkSession,
+    config: dict[str, Any],
+    cate_1_depth: str,
+    cate_2_depth: str,
+    sc_measurement: int,
+    max_prompt_rows: int,
+    sample_seed: str = DEFAULT_SAMPLE_SEED,
+) -> list[str]:
+    """Collect a topic-pool prompt memo list with mixed metadata/length coverage."""
+    sample_df = load_diverse_prompt_sample_df(
+        spark=spark,
+        config=config,
+        cate_1_depth=cate_1_depth,
+        cate_2_depth=cate_2_depth,
+        sc_measurement=sc_measurement,
+        max_prompt_rows=max_prompt_rows,
+        sample_seed=sample_seed,
+    )
+    return [row["memo"] for row in sample_df.toLocalIterator()]
