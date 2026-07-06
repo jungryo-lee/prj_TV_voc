@@ -766,6 +766,33 @@ def clean_text(value: Any) -> str:
     return "" if value is None else re.sub(r"\s+", " ", str(value)).strip()
 
 
+def _compact_prompt_terms(
+    values: list[str] | None,
+    *,
+    max_items: int,
+) -> list[str]:
+    """Return a compact unique list for prompt injection."""
+    if not values:
+        return []
+
+    seen: set[str] = set()
+    compacted: list[str] = []
+
+    for value in values:
+        text = clean_text(value)
+        if not text:
+            continue
+        lowered = text.lower()
+        if lowered in seen:
+            continue
+        seen.add(lowered)
+        compacted.append(text)
+        if len(compacted) >= max_items:
+            break
+
+    return compacted
+
+
 def sc_label(sc_measurement: int) -> str:
     """Return a Korean sentiment label for the current group."""
     if int(sc_measurement) == 1:
@@ -964,14 +991,30 @@ def build_topic_pool_messages(
 ) -> list[dict[str, str]]:
     """Build messages for topic-pool generation."""
     overall_name = overall_topic_name(sc_measurement)
-    feature_patterns = get_feature_patterns(cate_1_depth, cate_2_depth)
+    feature_patterns = get_rule_profile_prompt_feature_hints(
+        cate_1_depth,
+        cate_2_depth,
+        max_items=25,
+    )
 
     overall_allowed_rule = clean_text(rule_profile.get("overall_allowed_rule"))
     overall_block_rule = clean_text(rule_profile.get("overall_block_rule"))
-    overall_sentiment_terms = rule_profile.get("overall_sentiment_terms", []) or []
-    feature_hint_terms = rule_profile.get("feature_hint_terms", []) or []
-    reason_signal_terms = rule_profile.get("reason_signal_terms", []) or []
-    non_overall_examples = rule_profile.get("non_overall_examples", []) or []
+    overall_sentiment_terms = _compact_prompt_terms(
+        rule_profile.get("overall_sentiment_terms", []) or [],
+        max_items=15,
+    )
+    feature_hint_terms = _compact_prompt_terms(
+        rule_profile.get("feature_hint_terms", []) or [],
+        max_items=25,
+    )
+    reason_signal_terms = _compact_prompt_terms(
+        rule_profile.get("reason_signal_terms", []) or [],
+        max_items=25,
+    )
+    non_overall_examples = _compact_prompt_terms(
+        rule_profile.get("non_overall_examples", []) or [],
+        max_items=8,
+    )
 
     system = f"""
 You are a VOC taxonomy designer for TV review topic classification.
@@ -991,15 +1034,22 @@ Rules:
 - Topic labels should be concise and operationally useful.
 - Avoid duplicate or near-synonym topics.
 - Prefer function/issue/attribute-based topics over vague sentiment buckets.
+- Avoid overly fine-grained topics that would be too small to operate monthly.
 
 Rule profile guidance:
 - overall_allowed_rule: {overall_allowed_rule}
 - overall_block_rule: {overall_block_rule}
-- overall_sentiment_terms: {json.dumps(overall_sentiment_terms[:60], ensure_ascii=False)}
-- feature_hint_terms: {json.dumps(feature_hint_terms[:120], ensure_ascii=False)}
-- reason_signal_terms: {json.dumps(reason_signal_terms[:120], ensure_ascii=False)}
-- non_overall_examples: {json.dumps(non_overall_examples[:20], ensure_ascii=False)}
-- category_feature_hints: {json.dumps(feature_patterns[:120], ensure_ascii=False)}
+- overall_sentiment_terms: {json.dumps(overall_sentiment_terms, ensure_ascii=False)}
+- feature_hint_terms: {json.dumps(feature_hint_terms, ensure_ascii=False)}
+- reason_signal_terms: {json.dumps(reason_signal_terms, ensure_ascii=False)}
+- non_overall_examples: {json.dumps(non_overall_examples, ensure_ascii=False)}
+- category_feature_hints: {json.dumps(feature_patterns, ensure_ascii=False)}
+
+Output rules:
+- Include the mandatory overall topic exactly once.
+- Create topics that are broad enough for monthly operation but specific enough for root-cause analysis.
+- Merge near-synonyms instead of splitting them.
+- Use representative memos only as short supporting examples.
 
 Return JSON only:
 {{
