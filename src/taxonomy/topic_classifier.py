@@ -142,6 +142,7 @@ def get_classification_stage_config(config: dict[str, Any]) -> dict[str, Any]:
             taxonomy_cfg.get("review_required_default", True)
         ),
         "classify_batch_size": int(classification_cfg.get("classify_batch_size", 25)),
+        "candidate_topic_limit": int(classification_cfg.get("candidate_topic_limit", 5)),
     }
 
 
@@ -332,7 +333,11 @@ def build_topic_candidates(
     topic_pool: dict[str, Any],
     rule_profile: dict[str, Any],
 ) -> list[dict[str, Any]]:
-    """Build lexical topic candidates for one memo."""
+    """Build heuristic topic candidates for one memo.
+
+    This stage is intentionally conservative: it should produce a useful shortlist
+    for downstream LLM selection, not aggressively force a final topic.
+    """
     memo_clean = _clean_text(memo_text)
     memo_tokens = _tokenize(memo_clean)
     candidates: list[dict[str, Any]] = []
@@ -352,20 +357,20 @@ def build_topic_candidates(
         description_overlap = len(memo_tokens & description_terms)
         representative_overlap = len(memo_tokens & representative_terms)
 
-        feature_bonus = 0.0
+        direct_signal_bonus = 0.0
         for feature_term in rule_profile.get("feature_hint_terms", []):
             normalized_feature = feature_term.lower()
             if normalized_feature and normalized_feature in memo_clean.lower():
                 if normalized_feature in topic_name.lower():
-                    feature_bonus += 0.25
+                    direct_signal_bonus += 1.25
                 elif normalized_feature in topic_row.get("description", "").lower():
-                    feature_bonus += 0.10
+                    direct_signal_bonus += 0.85
 
         score = (
-            (0.50 * topic_overlap)
-            + (0.30 * description_overlap)
-            + (0.20 * representative_overlap)
-            + feature_bonus
+            (1.20 * topic_overlap)
+            + (0.85 * description_overlap)
+            + (0.05 * representative_overlap)
+            + direct_signal_bonus
         )
 
         if score <= 0:
@@ -378,7 +383,7 @@ def build_topic_candidates(
                 "topic_overlap": int(topic_overlap),
                 "description_overlap": int(description_overlap),
                 "representative_overlap": int(representative_overlap),
-                "feature_bonus": round(float(feature_bonus), 4),
+                "direct_signal_bonus": round(float(direct_signal_bonus), 4),
             }
         )
 
@@ -441,9 +446,21 @@ def apply_llm_fallback(
     config: dict[str, Any],
     model_key: str | None = None,
 ) -> dict[str, Any]:
-    """Use LLM only for hard ambiguous cases."""
+    """Use LLM to pick the final topic from a heuristic shortlist."""
     llm_client = get_llm_client(config=config, model_key=model_key)
-    candidate_names = [row["topic"] for row in candidate_topics[:5]]
+    shortlist = candidate_topics[: int(get_classification_stage_config(config)["candidate_topic_limit"])]
+    candidate_names = [row["topic"] for row in shortlist]
+    available_topics = topic_pool.get("topics", [])
+    if candidate_names:
+        allowed_topic_rows = [
+            row for row in available_topics if row.get("topic") in set(candidate_names)
+        ]
+    else:
+        allowed_topic_rows = [
+            row
+            for row in available_topics
+            if row.get("topic") != rule_profile.get("overall_topic_name")
+        ]
 
     system_prompt = """
 You are classifying one VOC memo into a topic taxonomy.
@@ -464,11 +481,11 @@ Return strict JSON only with keys:
 - overall_allowed_rule: {rule_profile.get("overall_allowed_rule", "")}
 - overall_block_rule: {rule_profile.get("overall_block_rule", "")}
 
-[Available topics]
-{_safe_json_dumps(topic_pool.get("topics", []))}
+[Allowed topics for final selection]
+{_safe_json_dumps(allowed_topic_rows)}
 
 [Top candidates]
-{_safe_json_dumps(candidate_topics[:5])}
+{_safe_json_dumps(shortlist)}
 
 [Memo]
 {memo_text}
@@ -476,7 +493,12 @@ Return strict JSON only with keys:
 Rules:
 - Use pred_topic_type among overall, topic, others.
 - If none fits clearly, return pred_topic as 기타 and pred_topic_type as others.
-- If you pick topic, it must be one of the available topics.
+- If you pick topic, it must be one of the allowed topics above.
+- Do not use overall when the memo gives a specific reason such as easy, intuitive,
+  voice, app button, Netflix, Prime Video, backlit, solar, USB-C, one remote,
+  set top box, external device control, cursor, pointer, typing, navigation.
+- Use overall only for short pure praise/complaint without a concrete reason.
+- Prefer the most specific topic when the memo mentions a concrete function or feature.
 - Return JSON only.
 """.strip()
 
@@ -489,7 +511,7 @@ Rules:
     pred_topic_type = _clean_text(payload.get("pred_topic_type")).lower()
     match_reason = _clean_text(payload.get("match_reason"))
 
-    valid_topics = {row["topic"] for row in topic_pool.get("topics", [])}
+    valid_topics = {row["topic"] for row in allowed_topic_rows}
     if pred_topic not in valid_topics and pred_topic != "기타":
         pred_topic = "기타"
         pred_topic_type = "others"
@@ -569,7 +591,7 @@ def classify_topic_for_group(
     model_key: str | None = None,
     max_rows: int | None = None,
     sample_seed: str = DEFAULT_CLASSIFICATION_SEED,
-    use_llm_fallback: bool = False,
+    use_llm_fallback: bool = True,
 ) -> dict[str, Any]:
     """Classify memos for one taxonomy group using current design artifacts."""
     effective_config = config or load_config(config_path)
@@ -623,14 +645,7 @@ def classify_topic_for_group(
                 normalized_topic_pool,
                 normalized_rule_profile,
             )
-            decision = resolve_topic_decision(
-                candidate_topics,
-                min_score=stage_cfg["topic_match_min_score"],
-                min_margin=stage_cfg["topic_match_min_margin"],
-                review_required_default=stage_cfg["review_required_default"],
-            )
-
-            if use_llm_fallback and decision["pred_topic_type"] == "ambiguous":
+            if use_llm_fallback:
                 decision = apply_llm_fallback(
                     memo_text,
                     cate_1_depth=cate_1_depth,
@@ -643,6 +658,13 @@ def classify_topic_for_group(
                     model_key=model_key,
                 )
                 llm_used_yn = True
+            else:
+                decision = resolve_topic_decision(
+                    candidate_topics,
+                    min_score=stage_cfg["topic_match_min_score"],
+                    min_margin=stage_cfg["topic_match_min_margin"],
+                    review_required_default=stage_cfg["review_required_default"],
+                )
 
         result_row = normalize_classification_result(
             base_row,
@@ -693,7 +715,7 @@ def classify_topics_for_groups(
     group_payloads: list[dict[str, Any]],
     model_key: str | None = None,
     max_rows: int | None = None,
-    use_llm_fallback: bool = False,
+    use_llm_fallback: bool = True,
 ) -> dict[str, Any]:
     """Run classification for multiple groups and union the results."""
     effective_config = config or load_config(config_path)
