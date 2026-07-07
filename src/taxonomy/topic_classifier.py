@@ -17,6 +17,175 @@ from taxonomy.prompt_builder import overall_topic_name
 
 DEFAULT_CLASSIFICATION_SEED = "seed_20260707"
 
+CATEGORY_NEUTRAL_TARGET_TERMS: dict[str, list[str]] = {
+    "07-06. 리모컨 사용성": [
+        "리모컨",
+        "리모콘",
+        "매직리모컨",
+        "매직 리모컨",
+        "스마트 리모컨",
+        "remote",
+        "remote control",
+        "smart remote",
+        "magic remote",
+        "control",
+        "controls",
+        "controller",
+    ]
+}
+
+TOPIC_DIRECT_SIGNAL_HINTS: dict[str, list[str]] = {
+    "앱 바로가기 버튼": [
+        "app",
+        "apps",
+        "application",
+        "applications",
+        "ott",
+        "netflix",
+        "prime",
+        "prime video",
+        "youtube",
+        "disney",
+        "shortcut",
+        "quick button",
+        "dedicated button",
+        "direct button",
+        "바로가기",
+        "전용 버튼",
+        "앱 버튼",
+        "넷플릭스 버튼",
+        "유튜브 버튼",
+    ],
+    "통합 리모컨/외부기기 제어": [
+        "one remote",
+        "single remote",
+        "all my devices",
+        "all devices",
+        "everything",
+        "external device",
+        "external devices",
+        "set top box",
+        "decoder",
+        "virgin box",
+        "ziggobox",
+        "dvd player",
+        "sound bar",
+        "amazon fire tv",
+        "외부기기",
+        "셋톱박스",
+        "통합",
+        "하나의 리모컨",
+        "모든 기기",
+    ],
+    "음성 제어/마이크": [
+        "voice",
+        "voice control",
+        "voice command",
+        "voice button",
+        "voice search",
+        "microphone",
+        "mic",
+        "alexa",
+        "google assistant",
+        "음성",
+        "마이크",
+        "음성 버튼",
+        "음성검색",
+    ],
+    "충전식/태양광 배터리": [
+        "solar",
+        "solar cell",
+        "solar powered",
+        "solar charging",
+        "usb-c",
+        "usb charged",
+        "rechargeable",
+        "battery",
+        "charge",
+        "charging",
+        "태양광",
+        "충전",
+        "충전식",
+        "배터리",
+    ],
+    "포인터/마우스 조작": [
+        "pointer",
+        "cursor",
+        "mouse",
+        "motion sensor",
+        "motion remote",
+        "air mouse",
+        "pointer remote",
+        "포인터",
+        "커서",
+        "마우스",
+        "모션",
+    ],
+    "쉬운 조작/직관적 탐색": [
+        "easy to use",
+        "easy for me",
+        "easy",
+        "intuitive",
+        "simple",
+        "convenient",
+        "navigate",
+        "navigation",
+        "easy access",
+        "straightforward",
+        "직관적",
+        "편리",
+        "간편",
+        "쉽다",
+        "조작이 쉽",
+        "메뉴 이동",
+        "탐색",
+    ],
+    "빠른 반응/원활한 작동": [
+        "responsive",
+        "response",
+        "fast",
+        "quick",
+        "works well",
+        "works perfectly",
+        "reacts quickly",
+        "반응",
+        "빠르",
+        "원활",
+        "잘 작동",
+    ],
+    "버튼 구성/레이아웃": [
+        "button layout",
+        "buttons",
+        "button",
+        "number keys",
+        "setup",
+        "set up",
+        "layout",
+        "rubbery button",
+        "버튼",
+        "버튼 구성",
+        "버튼 배열",
+        "숫자버튼",
+        "레이아웃",
+    ],
+    "그립감/크기/무게": [
+        "fits perfectly in the hand",
+        "in the hand",
+        "small",
+        "minimal",
+        "slim",
+        "light",
+        "lightweight",
+        "handy",
+        "grip",
+        "가볍",
+        "작다",
+        "슬림",
+        "그립",
+        "손에",
+    ],
+}
+
 CLASSIFICATION_RESULT_SCHEMA = T.StructType(
     [
         T.StructField("memo_id", T.StringType(), False),
@@ -115,6 +284,24 @@ def _contains_any_term(text: str, terms: list[str]) -> bool:
 def _safe_json_dumps(value: Any) -> str:
     """Serialize Python values into a UTF-8 safe JSON string."""
     return json.dumps(value, ensure_ascii=False)
+
+
+def get_neutral_target_terms(cate_2_depth: str) -> list[str]:
+    """Return category target terms that should not block overall by themselves."""
+    return CATEGORY_NEUTRAL_TARGET_TERMS.get(cate_2_depth, [])
+
+
+def _strip_neutral_target_terms(text: str, neutral_terms: list[str]) -> str:
+    """Remove neutral category target nouns before reason/feature checks."""
+    normalized = f" {_clean_text(text).lower()} "
+    for term in sorted((_clean_text(v).lower() for v in neutral_terms if _clean_text(v)), key=len, reverse=True):
+        normalized = normalized.replace(f" {term} ", " ")
+    return " ".join(normalized.split())
+
+
+def get_topic_direct_signal_hints(topic_name: str) -> list[str]:
+    """Return direct signal terms that strongly imply a topic."""
+    return TOPIC_DIRECT_SIGNAL_HINTS.get(topic_name, [])
 
 
 def get_classification_stage_config(config: dict[str, Any]) -> dict[str, Any]:
@@ -281,18 +468,21 @@ def apply_overall_rules(
     memo_text: str,
     rule_profile: dict[str, Any],
     *,
+    cate_2_depth: str,
     overall_max_text_length: int,
 ) -> dict[str, Any]:
     """Evaluate whether a memo should be classified as overall sentiment."""
     memo_clean = _clean_text(memo_text)
     memo_lower = memo_clean.lower()
+    neutral_terms = get_neutral_target_terms(cate_2_depth)
+    memo_without_target = _strip_neutral_target_terms(memo_lower, neutral_terms)
     feature_terms = rule_profile.get("feature_hint_terms", [])
     reason_terms = rule_profile.get("reason_signal_terms", [])
     overall_terms = rule_profile.get("overall_sentiment_terms", [])
 
     has_overall_term = _contains_any_term(memo_lower, overall_terms)
-    has_feature_term = _contains_any_term(memo_lower, feature_terms)
-    has_reason_term = _contains_any_term(memo_lower, reason_terms)
+    has_feature_term = _contains_any_term(memo_without_target, feature_terms)
+    has_reason_term = _contains_any_term(memo_without_target, reason_terms)
     is_short_text = len(memo_clean) <= int(overall_max_text_length)
 
     allowed = has_overall_term and is_short_text and not has_feature_term and not has_reason_term
@@ -366,6 +556,13 @@ def build_topic_candidates(
                 elif normalized_feature in topic_row.get("description", "").lower():
                     direct_signal_bonus += 0.85
 
+        topic_signal_hits: list[str] = []
+        for hint in get_topic_direct_signal_hints(topic_name):
+            normalized_hint = hint.lower()
+            if normalized_hint and normalized_hint in memo_clean.lower():
+                topic_signal_hits.append(hint)
+                direct_signal_bonus += 2.0 if " " in normalized_hint else 1.4
+
         score = (
             (1.20 * topic_overlap)
             + (0.85 * description_overlap)
@@ -384,6 +581,7 @@ def build_topic_candidates(
                 "description_overlap": int(description_overlap),
                 "representative_overlap": int(representative_overlap),
                 "direct_signal_bonus": round(float(direct_signal_bonus), 4),
+                "topic_signal_hits": topic_signal_hits[:5],
             }
         )
 
@@ -494,10 +692,11 @@ Rules:
 - Use pred_topic_type among overall, topic, others.
 - If none fits clearly, return pred_topic as 기타 and pred_topic_type as others.
 - If you pick topic, it must be one of the allowed topics above.
+- Mentioning the category target itself such as remote/remocon/control alone does not block overall.
 - Do not use overall when the memo gives a specific reason such as easy, intuitive,
   voice, app button, Netflix, Prime Video, backlit, solar, USB-C, one remote,
   set top box, external device control, cursor, pointer, typing, navigation.
-- Use overall only for short pure praise/complaint without a concrete reason.
+- Use overall for short pure praise/complaint about the remote itself when there is no concrete reason.
 - Prefer the most specific topic when the memo mentions a concrete function or feature.
 - Return JSON only.
 """.strip()
@@ -625,6 +824,7 @@ def classify_topic_for_group(
         overall_decision = apply_overall_rules(
             memo_text,
             normalized_rule_profile,
+            cate_2_depth=cate_2_depth,
             overall_max_text_length=stage_cfg["overall_max_text_length"],
         )
         llm_used_yn = False
