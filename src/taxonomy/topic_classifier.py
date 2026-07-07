@@ -697,6 +697,27 @@ Rules:
   voice, app button, Netflix, Prime Video, backlit, solar, USB-C, one remote,
   set top box, external device control, cursor, pointer, typing, navigation.
 - Use overall for short pure praise/complaint about the remote itself when there is no concrete reason.
+- Overall positive examples:
+  "Remote is great"
+  "The remote is the best one I've used"
+  "Magic remote is awesome"
+  "Pros: the remote control"
+  "The smart remote is even better"
+- Topic priority hints:
+  If the memo mentions Netflix, Prime Video, YouTube, OTT, app shortcut, direct app access,
+  or dedicated app buttons, prefer 앱 바로가기 버튼.
+  If the memo mentions one remote, single remote, all devices, set top box, decoder,
+  virgin box, DVD player, sound bar, Fire TV, or combining remotes, prefer 통합 리모컨/외부기기 제어.
+  If the memo mentions voice button, voice command, Alexa, microphone, or voice search,
+  prefer 음성 제어/마이크.
+  If the memo mentions solar, USB-C, charging, rechargeable, or battery, prefer 충전식/태양광 배터리.
+  If the memo mentions backlight, lighting in the dark, or illuminated buttons, prefer 백라이트/야간 사용.
+  If both app-button and button-layout cues are present, choose 앱 바로가기 버튼 when the
+  user's point is fast access to apps/services; choose 버튼 구성/레이아웃 only when the
+  point is button count, spacing, arrangement, or redundancy itself.
+  If both one-remote and easy-to-use cues are present, choose 통합 리모컨/외부기기 제어 when
+  the main point is unified control across devices; choose 쉬운 조작/직관적 탐색 only when
+  the main point is ease/intuition without multi-device control.
 - Prefer the most specific topic when the memo mentions a concrete function or feature.
 - Return JSON only.
 """.strip()
