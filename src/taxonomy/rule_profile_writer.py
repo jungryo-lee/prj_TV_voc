@@ -218,11 +218,16 @@ def _delete_existing_group_rows(
     spark.sql(
         f"""
         DELETE FROM {table_name}
-        WHERE (cate_1_depth, cate_2_depth, sc_measurement, model_version, prompt_version, taxonomy_version)
-              IN (
-                  SELECT cate_1_depth, cate_2_depth, sc_measurement, model_version, prompt_version, taxonomy_version
-                  FROM _tmp_rule_profile_keys
-              )
+        WHERE EXISTS (
+            SELECT 1
+            FROM _tmp_rule_profile_keys src
+            WHERE {table_name}.cate_1_depth = src.cate_1_depth
+              AND {table_name}.cate_2_depth = src.cate_2_depth
+              AND {table_name}.sc_measurement = src.sc_measurement
+              AND {table_name}.model_version = src.model_version
+              AND {table_name}.prompt_version = src.prompt_version
+              AND {table_name}.taxonomy_version = src.taxonomy_version
+        )
         """
     )
 
