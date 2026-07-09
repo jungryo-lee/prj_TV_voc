@@ -44,10 +44,10 @@ def load_design_target_groups(
     group_df = load_target_groups(
         spark=spark,
         config=config,
-        limit_group_count=limit_group_count,
+        limit_group_count=None,
     )
     group_rows = [row.asDict(recursive=True) for row in group_df.toLocalIterator()]
-    return [
+    filtered_rows = [
         row
         for row in group_rows
         if _matches_target_filters(
@@ -57,6 +57,11 @@ def load_design_target_groups(
             sc_measurement=sc_measurement,
         )
     ]
+
+    if limit_group_count is not None:
+        return filtered_rows[: int(limit_group_count)]
+
+    return filtered_rows
 
 
 def run_taxonomy_design_refresh(
