@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 from datetime import datetime
 from typing import Any
 
@@ -33,6 +34,70 @@ CATEGORY_NEUTRAL_TARGET_TERMS: dict[str, list[str]] = {
         "controller",
     ]
 }
+
+GENERIC_NEUTRAL_TERM_HINTS: dict[str, list[str]] = {
+    "app": ["app", "apps", "application", "applications", "ott", "streaming"],
+    "컨텐츠": ["컨텐츠", "콘텐츠", "content", "contents"],
+    "채널": ["채널", "channel", "channels"],
+    "메뉴": ["메뉴", "menu", "menus"],
+    "ui": ["ui", "interface", "screen", "home screen"],
+    "sw": ["software", "sw", "os", "system", "firmware", "platform"],
+    "게임": ["game", "gaming", "games", "게임"],
+    "음성": ["voice", "speech", "audio", "음성"],
+    "모바일": ["mobile", "phone", "smartphone", "tablet", "모바일"],
+    "iot": ["iot", "home iot", "smart home", "device connection", "연동"],
+    "광고": ["ad", "ads", "advertisement", "advertising", "광고"],
+    "전반적": ["overall", "general", "전반", "전체"],
+}
+
+GENERIC_OVERALL_REASON_HINTS: list[str] = [
+    "easy",
+    "easier",
+    "intuitive",
+    "simple",
+    "convenient",
+    "fast",
+    "faster",
+    "responsive",
+    "backlit",
+    "solar",
+    "usb-c",
+    "voice",
+    "shortcut",
+    "button",
+    "layout",
+    "menu",
+    "search",
+    "navigation",
+    "update",
+    "bug",
+    "lag",
+    "many apps",
+    "few buttons",
+    "controls all devices",
+    "all devices",
+    "set top box",
+    "easy to use",
+    "직관적",
+    "편리",
+    "간편",
+    "빠르",
+    "반응",
+    "버튼",
+    "검색",
+    "탐색",
+    "업데이트",
+]
+
+GENERIC_OVERALL_POSITIVE_PATTERNS: list[str] = [
+    "great {target}",
+    "good {target}",
+    "{target} is great",
+    "{target} is good",
+    "{target} is awesome",
+    "{target} is excellent",
+    "love the {target}",
+]
 
 TOPIC_DIRECT_SIGNAL_HINTS: dict[str, list[str]] = {
     "앱 바로가기 버튼": [
@@ -286,9 +351,89 @@ def _safe_json_dumps(value: Any) -> str:
     return json.dumps(value, ensure_ascii=False)
 
 
-def get_neutral_target_terms(cate_2_depth: str) -> list[str]:
-    """Return category target terms that should not block overall by themselves."""
-    return CATEGORY_NEUTRAL_TARGET_TERMS.get(cate_2_depth, [])
+def _extract_label_tokens(label: str) -> list[str]:
+    """Extract compact lexical tokens from a category/topic label."""
+    cleaned = re.sub(r"^\d+\-\d+\.\s*", "", _clean_text(label))
+    parts = re.split(r"[\/\(\)\-\_,\s]+", cleaned)
+    tokens = [part.strip() for part in parts if part.strip()]
+    return tokens
+
+
+def _expand_generic_neutral_terms(tokens: list[str]) -> list[str]:
+    """Expand category label tokens into generic neutral target terms."""
+    expanded: list[str] = []
+    for token in tokens:
+        lowered = token.lower()
+        expanded.append(token)
+        for generic_key, values in GENERIC_NEUTRAL_TERM_HINTS.items():
+            if generic_key in lowered or generic_key in token:
+                expanded.extend(values)
+    return _clean_term_list(expanded, max_items=50)
+
+
+def build_neutral_target_terms(
+    cate_1_depth: str,
+    cate_2_depth: str,
+    *,
+    rule_profile: dict[str, Any] | None = None,
+    topic_pool: dict[str, Any] | None = None,
+) -> list[str]:
+    """Build neutral category target terms from category labels and artifacts.
+
+    These terms represent the *target object* of the category and should not
+    block overall sentiment by themselves.
+    """
+    terms: list[str] = []
+    terms.extend(CATEGORY_NEUTRAL_TARGET_TERMS.get(cate_2_depth, []))
+    terms.extend(_extract_label_tokens(cate_1_depth))
+    terms.extend(_extract_label_tokens(cate_2_depth))
+    terms.extend(
+        _expand_generic_neutral_terms(
+            _extract_label_tokens(cate_1_depth) + _extract_label_tokens(cate_2_depth)
+        )
+    )
+
+    if rule_profile:
+        feature_terms = rule_profile.get("feature_hint_terms", [])[:30]
+        for term in feature_terms:
+            cleaned = _clean_text(term)
+            if cleaned and len(cleaned.split()) <= 2:
+                terms.append(cleaned)
+
+    if topic_pool:
+        for topic_row in (topic_pool.get("topics") or [])[:20]:
+            terms.extend(_extract_label_tokens(topic_row.get("topic", "")))
+
+    return _clean_term_list(terms, max_items=80)
+
+
+def build_dynamic_overall_examples(
+    neutral_terms: list[str],
+    *,
+    sentiment_terms: list[str] | None = None,
+) -> list[str]:
+    """Build category-aware overall positive examples for the LLM prompt."""
+    target_terms = [term for term in neutral_terms if len(term) >= 2][:6]
+    examples: list[str] = []
+    for target in target_terms:
+        lowered = target.lower()
+        if lowered in {"app", "apps", "application", "applications"}:
+            examples.extend(["great apps", "good apps", "apps are great"])
+        elif lowered in {"channel", "channels", "채널"}:
+            examples.extend(["great channels", "good channels"])
+        elif lowered in {"content", "contents", "컨텐츠", "콘텐츠"}:
+            examples.extend(["great content", "good content"])
+
+        for pattern in GENERIC_OVERALL_POSITIVE_PATTERNS:
+            examples.append(pattern.format(target=target))
+
+    if sentiment_terms:
+        for sentiment in sentiment_terms[:5]:
+            cleaned = _clean_text(sentiment)
+            if cleaned:
+                examples.append(cleaned)
+
+    return _clean_term_list(examples, max_items=20)
 
 
 def _strip_neutral_target_terms(text: str, neutral_terms: list[str]) -> str:
@@ -302,6 +447,28 @@ def _strip_neutral_target_terms(text: str, neutral_terms: list[str]) -> str:
 def get_topic_direct_signal_hints(topic_name: str) -> list[str]:
     """Return direct signal terms that strongly imply a topic."""
     return TOPIC_DIRECT_SIGNAL_HINTS.get(topic_name, [])
+
+
+def build_topic_direct_signal_hints(
+    topic_name: str,
+    *,
+    topic_description: str = "",
+    representative_memos: list[str] | None = None,
+) -> list[str]:
+    """Build topic signal hints from static hints plus topic artifacts."""
+    hints: list[str] = []
+    hints.extend(get_topic_direct_signal_hints(topic_name))
+    hints.extend(_extract_label_tokens(topic_name))
+
+    description_tokens = _extract_label_tokens(topic_description)
+    hints.extend(_expand_generic_neutral_terms(description_tokens))
+    hints.extend(description_tokens)
+
+    for memo in (representative_memos or [])[:5]:
+        memo_tokens = _extract_label_tokens(memo)
+        hints.extend([token for token in memo_tokens if len(token) >= 4][:5])
+
+    return _clean_term_list(hints, max_items=40)
 
 
 def get_classification_stage_config(config: dict[str, Any]) -> dict[str, Any]:
@@ -468,16 +635,26 @@ def apply_overall_rules(
     memo_text: str,
     rule_profile: dict[str, Any],
     *,
+    cate_1_depth: str,
     cate_2_depth: str,
+    topic_pool: dict[str, Any] | None = None,
     overall_max_text_length: int,
 ) -> dict[str, Any]:
     """Evaluate whether a memo should be classified as overall sentiment."""
     memo_clean = _clean_text(memo_text)
     memo_lower = memo_clean.lower()
-    neutral_terms = get_neutral_target_terms(cate_2_depth)
+    neutral_terms = build_neutral_target_terms(
+        cate_1_depth,
+        cate_2_depth,
+        rule_profile=rule_profile,
+        topic_pool=topic_pool,
+    )
     memo_without_target = _strip_neutral_target_terms(memo_lower, neutral_terms)
     feature_terms = rule_profile.get("feature_hint_terms", [])
-    reason_terms = rule_profile.get("reason_signal_terms", [])
+    reason_terms = _clean_term_list(
+        (rule_profile.get("reason_signal_terms", []) or []) + GENERIC_OVERALL_REASON_HINTS,
+        max_items=200,
+    )
     overall_terms = rule_profile.get("overall_sentiment_terms", [])
 
     has_overall_term = _contains_any_term(memo_lower, overall_terms)
@@ -557,7 +734,11 @@ def build_topic_candidates(
                     direct_signal_bonus += 0.85
 
         topic_signal_hits: list[str] = []
-        for hint in get_topic_direct_signal_hints(topic_name):
+        for hint in build_topic_direct_signal_hints(
+            topic_name,
+            topic_description=topic_row.get("description", ""),
+            representative_memos=topic_row.get("representative_memos", []),
+        ):
             normalized_hint = hint.lower()
             if normalized_hint and normalized_hint in memo_clean.lower():
                 topic_signal_hits.append(hint)
@@ -660,6 +841,17 @@ def apply_llm_fallback(
             if row.get("topic") != rule_profile.get("overall_topic_name")
         ]
 
+    neutral_terms = build_neutral_target_terms(
+        cate_1_depth,
+        cate_2_depth,
+        rule_profile=rule_profile,
+        topic_pool=topic_pool,
+    )
+    overall_examples = build_dynamic_overall_examples(
+        neutral_terms,
+        sentiment_terms=rule_profile.get("overall_sentiment_terms", []),
+    )
+
     system_prompt = """
 You are classifying one VOC memo into a topic taxonomy.
 Return strict JSON only with keys:
@@ -685,6 +877,9 @@ Return strict JSON only with keys:
 [Top candidates]
 {_safe_json_dumps(shortlist)}
 
+[Neutral category target terms]
+{_safe_json_dumps(neutral_terms[:20])}
+
 [Memo]
 {memo_text}
 
@@ -692,17 +887,15 @@ Rules:
 - Use pred_topic_type among overall, topic, others.
 - If none fits clearly, return pred_topic as 기타 and pred_topic_type as others.
 - If you pick topic, it must be one of the allowed topics above.
-- Mentioning the category target itself such as remote/remocon/control alone does not block overall.
+- Mentioning the category target itself alone does not block overall.
+- If the memo only says the target object is good/bad/great/awesome without a concrete reason,
+  classify it as overall.
 - Do not use overall when the memo gives a specific reason such as easy, intuitive,
   voice, app button, Netflix, Prime Video, backlit, solar, USB-C, one remote,
   set top box, external device control, cursor, pointer, typing, navigation.
-- Use overall for short pure praise/complaint about the remote itself when there is no concrete reason.
+- Use overall for short pure praise/complaint about the category target itself when there is no concrete reason.
 - Overall positive examples:
-  "Remote is great"
-  "The remote is the best one I've used"
-  "Magic remote is awesome"
-  "Pros: the remote control"
-  "The smart remote is even better"
+{_safe_json_dumps(overall_examples)}
 - Topic priority hints:
   If the memo mentions Netflix, Prime Video, YouTube, OTT, app shortcut, direct app access,
   or dedicated app buttons, prefer 앱 바로가기 버튼.
@@ -845,7 +1038,9 @@ def classify_topic_for_group(
         overall_decision = apply_overall_rules(
             memo_text,
             normalized_rule_profile,
+            cate_1_depth=cate_1_depth,
             cate_2_depth=cate_2_depth,
+            topic_pool=normalized_topic_pool,
             overall_max_text_length=stage_cfg["overall_max_text_length"],
         )
         llm_used_yn = False
