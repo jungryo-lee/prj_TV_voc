@@ -163,6 +163,7 @@ classification:
   enabled: false
   prompt_key: topic_classification_system
   max_sample_rows_per_group: 1000
+  dedupe_before_sample: true
   classify_batch_size: 25
   memo_summarize_threshold: 200
   summarize_batch_size: 20

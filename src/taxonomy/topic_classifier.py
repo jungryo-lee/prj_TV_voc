@@ -9,6 +9,7 @@ from typing import Any
 
 from pyspark.sql import DataFrame, SparkSession, types as T
 from pyspark.sql import functions as F
+from pyspark.sql.window import Window
 
 from common.config_loader import get_source_table, load_config
 from common.llm_client import get_llm_client
@@ -588,6 +589,9 @@ def get_classification_stage_config(config: dict[str, Any]) -> dict[str, Any]:
         ),
         "classify_batch_size": int(classification_cfg.get("classify_batch_size", 25)),
         "candidate_topic_limit": int(classification_cfg.get("candidate_topic_limit", 5)),
+        "dedupe_before_sample": bool(
+            classification_cfg.get("dedupe_before_sample", True)
+        ),
     }
 
 
@@ -632,7 +636,12 @@ def prepare_classification_df(
     max_rows: int | None = None,
     sample_seed: str = DEFAULT_CLASSIFICATION_SEED,
 ) -> DataFrame:
-    """Load and normalize target memos for one classification group."""
+    """Load and normalize target memos for one classification group.
+
+    The dedupe step is for sampling / LLM-call efficiency only. Final operating
+    reports that need review-volume distribution should expand or aggregate back
+    to the raw review-row population by memo_id.
+    """
     stage_cfg = get_classification_stage_config(config)
     effective_max_rows = int(max_rows or stage_cfg["max_sample_rows_per_group"])
 
@@ -644,6 +653,29 @@ def prepare_classification_df(
             sc_measurement=sc_measurement,
         )
     ).transform(with_memo_id)
+
+    if stage_cfg["dedupe_before_sample"]:
+        base_df = (
+            base_df.withColumn(
+                "_dedupe_rn",
+                F.row_number().over(
+                    Window.partitionBy(
+                        "cate_1_depth",
+                        "cate_2_depth",
+                        "sc_measurement",
+                        "memo_id",
+                    ).orderBy(
+                        F.col("year").asc_nulls_last(),
+                        F.col("country").asc_nulls_last(),
+                        F.col("brand_name").asc_nulls_last(),
+                        F.col("device_type").asc_nulls_last(),
+                        F.col("memo").asc_nulls_last(),
+                    )
+                ),
+            )
+            .where(F.col("_dedupe_rn") == 1)
+            .drop("_dedupe_rn")
+        )
 
     sampled_df = (
         base_df.withColumn(
