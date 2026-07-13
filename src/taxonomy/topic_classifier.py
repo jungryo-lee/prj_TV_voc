@@ -346,6 +346,64 @@ def _contains_any_term(text: str, terms: list[str]) -> bool:
     return any(term.lower() in normalized for term in terms if _clean_text(term))
 
 
+def _contains_target_attached_term(
+    text: str,
+    *,
+    neutral_terms: list[str],
+    reason_terms: list[str],
+    max_token_gap: int = 4,
+) -> bool:
+    """Return whether a reason term appears attached to the category target.
+
+    This avoids over-blocking overall when unrelated topics such as delivery/price
+    are mentioned in the same memo but the category target itself is only praised
+    generally.
+    """
+    normalized_text = _clean_text(text).lower()
+    if not normalized_text:
+        return False
+
+    tokens = normalized_text.split()
+    if not tokens:
+        return False
+
+    cleaned_targets = [term.lower() for term in neutral_terms if _clean_text(term)]
+    cleaned_reasons = [term.lower() for term in reason_terms if _clean_text(term)]
+    if not cleaned_targets or not cleaned_reasons:
+        return False
+
+    # If a multi-word phrase explicitly appears with the target nearby, accept it.
+    for target in cleaned_targets:
+        for reason in cleaned_reasons:
+            if reason in normalized_text and target in normalized_text:
+                try:
+                    target_idx = normalized_text.index(target)
+                    reason_idx = normalized_text.index(reason)
+                except ValueError:
+                    continue
+                if abs(target_idx - reason_idx) <= 40:
+                    return True
+
+    target_positions = [
+        idx
+        for idx, token in enumerate(tokens)
+        for target in cleaned_targets
+        if token == target or token in target.split() or target in token
+    ]
+    reason_positions = [
+        idx
+        for idx, token in enumerate(tokens)
+        for reason in cleaned_reasons
+        if token == reason or token in reason.split() or reason in token
+    ]
+
+    for target_idx in target_positions:
+        for reason_idx in reason_positions:
+            if abs(target_idx - reason_idx) <= int(max_token_gap):
+                return True
+    return False
+
+
 def _safe_json_dumps(value: Any) -> str:
     """Serialize Python values into a UTF-8 safe JSON string."""
     return json.dumps(value, ensure_ascii=False)
@@ -469,6 +527,39 @@ def build_topic_direct_signal_hints(
         hints.extend([token for token in memo_tokens if len(token) >= 4][:5])
 
     return _clean_term_list(hints, max_items=40)
+
+
+def build_llm_topic_reference_rows(topic_pool: dict[str, Any]) -> list[dict[str, Any]]:
+    """Build compact topic references for semantic LLM matching.
+
+    The LLM should not depend on exact keyword hits only. We therefore pass
+    topic label, description, lexical hints, and a few representative memos so
+    semantically similar Korean/English wording can still map to the right topic.
+    """
+    reference_rows: list[dict[str, Any]] = []
+
+    for topic_row in topic_pool.get("topics", []):
+        topic_name = _clean_text(topic_row.get("topic"))
+        if not topic_name:
+            continue
+
+        reference_rows.append(
+            {
+                "topic": topic_name,
+                "description": _clean_text(topic_row.get("description")),
+                "semantic_hints": build_topic_direct_signal_hints(
+                    topic_name,
+                    topic_description=topic_row.get("description", ""),
+                    representative_memos=topic_row.get("representative_memos", []),
+                )[:15],
+                "representative_memos": _clean_term_list(
+                    topic_row.get("representative_memos"),
+                    max_items=3,
+                ),
+            }
+        )
+
+    return reference_rows
 
 
 def get_classification_stage_config(config: dict[str, Any]) -> dict[str, Any]:
@@ -658,8 +749,18 @@ def apply_overall_rules(
     overall_terms = rule_profile.get("overall_sentiment_terms", [])
 
     has_overall_term = _contains_any_term(memo_lower, overall_terms)
-    has_feature_term = _contains_any_term(memo_without_target, feature_terms)
-    has_reason_term = _contains_any_term(memo_without_target, reason_terms)
+    has_feature_term = _contains_target_attached_term(
+        memo_lower,
+        neutral_terms=neutral_terms,
+        reason_terms=feature_terms,
+        max_token_gap=5,
+    ) or _contains_any_term(memo_without_target, feature_terms)
+    has_reason_term = _contains_target_attached_term(
+        memo_lower,
+        neutral_terms=neutral_terms,
+        reason_terms=reason_terms,
+        max_token_gap=4,
+    )
     is_short_text = len(memo_clean) <= int(overall_max_text_length)
 
     allowed = has_overall_term and is_short_text and not has_feature_term and not has_reason_term
@@ -825,21 +926,18 @@ def apply_llm_fallback(
     config: dict[str, Any],
     model_key: str | None = None,
 ) -> dict[str, Any]:
-    """Use LLM to pick the final topic from a heuristic shortlist."""
+    """Use LLM to pick the final topic from the group topic pool."""
     llm_client = get_llm_client(config=config, model_key=model_key)
     shortlist = candidate_topics[: int(get_classification_stage_config(config)["candidate_topic_limit"])]
-    candidate_names = [row["topic"] for row in shortlist]
     available_topics = topic_pool.get("topics", [])
-    if candidate_names:
-        allowed_topic_rows = [
-            row for row in available_topics if row.get("topic") in set(candidate_names)
-        ]
-    else:
-        allowed_topic_rows = [
-            row
-            for row in available_topics
-            if row.get("topic") != rule_profile.get("overall_topic_name")
-        ]
+    allowed_topic_rows = [
+        row
+        for row in available_topics
+        if row.get("topic") != rule_profile.get("overall_topic_name")
+    ]
+    llm_topic_reference_rows = build_llm_topic_reference_rows(
+        {"topics": allowed_topic_rows}
+    )
 
     neutral_terms = build_neutral_target_terms(
         cate_1_depth,
@@ -872,9 +970,9 @@ Return strict JSON only with keys:
 - overall_block_rule: {rule_profile.get("overall_block_rule", "")}
 
 [Allowed topics for final selection]
-{_safe_json_dumps(allowed_topic_rows)}
+{_safe_json_dumps(llm_topic_reference_rows)}
 
-[Top candidates]
+[Heuristic shortlist hints]
 {_safe_json_dumps(shortlist)}
 
 [Neutral category target terms]
@@ -890,27 +988,30 @@ Rules:
 - Mentioning the category target itself alone does not block overall.
 - If the memo only says the target object is good/bad/great/awesome without a concrete reason,
   classify it as overall.
-- Do not use overall when the memo gives a specific reason such as easy, intuitive,
-  voice, app button, Netflix, Prime Video, backlit, solar, USB-C, one remote,
-  set top box, external device control, cursor, pointer, typing, navigation.
+- Match semantically, not only by exact words.
+- Treat Korean and English expressions, paraphrases, near-synonyms, and slightly different
+  surface wording as the same clue when they point to the same user reason.
+- If the memo uses different wording from the topic name but expresses the same underlying
+  reason or user experience, map it to the closest allowed topic.
+- Use the topic description, semantic_hints, and representative_memos as meaning anchors.
+  If the memo and a topic talk about the same user experience, feature purpose, or complaint
+  pattern, select that topic even when exact keywords do not match.
+- If unrelated praise/complaint about other attributes such as delivery, price, picture, or sound
+  appears in the same memo, ignore those unrelated attributes and focus on the current category target.
+- If the current category target itself is praised generally without a concrete target-specific reason,
+  keep it as overall even when unrelated attributes are also mentioned.
+- Do not use overall when the memo gives a concrete target-related reason, function,
+  usability benefit, design attribute, control method, access path, or failure symptom
+  that can be mapped to one of the allowed topics.
 - Use overall for short pure praise/complaint about the category target itself when there is no concrete reason.
 - Overall positive examples:
 {_safe_json_dumps(overall_examples)}
-- Topic priority hints:
-  If the memo mentions Netflix, Prime Video, YouTube, OTT, app shortcut, direct app access,
-  or dedicated app buttons, prefer 앱 바로가기 버튼.
-  If the memo mentions one remote, single remote, all devices, set top box, decoder,
-  virgin box, DVD player, sound bar, Fire TV, or combining remotes, prefer 통합 리모컨/외부기기 제어.
-  If the memo mentions voice button, voice command, Alexa, microphone, or voice search,
-  prefer 음성 제어/마이크.
-  If the memo mentions solar, USB-C, charging, rechargeable, or battery, prefer 충전식/태양광 배터리.
-  If the memo mentions backlight, lighting in the dark, or illuminated buttons, prefer 백라이트/야간 사용.
-  If both app-button and button-layout cues are present, choose 앱 바로가기 버튼 when the
-  user's point is fast access to apps/services; choose 버튼 구성/레이아웃 only when the
-  point is button count, spacing, arrangement, or redundancy itself.
-  If both one-remote and easy-to-use cues are present, choose 통합 리모컨/외부기기 제어 when
-  the main point is unified control across devices; choose 쉬운 조작/직관적 탐색 only when
-  the main point is ease/intuition without multi-device control.
+- If multiple topics look related, choose the one whose user intent is the closest semantic match,
+  not the one with the most literal word overlap.
+- If the memo contains both unrelated noise and one target-related clue, classify from that
+  target-related clue instead of defaulting to others.
+- Use others only when no allowed topic is a reasonable semantic fit after considering topic
+  descriptions, hints, and representative memos.
 - Prefer the most specific topic when the memo mentions a concrete function or feature.
 - Return JSON only.
 """.strip()
