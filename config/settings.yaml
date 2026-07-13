@@ -30,6 +30,7 @@ tables:
     clue_keyword: sandbox.z_jungryo_lee.tv_voc_clue_keyword
     topic_pool: sandbox.z_jungryo_lee.tv_voc_topic_pool
     classification_detail: sandbox.z_jungryo_lee.tv_voc_classification_detail
+    classification_full: sandbox.z_jungryo_lee.tv_voc_classification_full
     classification_summary: sandbox.z_jungryo_lee.tv_voc_classification_summary
     driver_input: sandbox.z_jungryo_lee.tv_voc_driver_input
     weighted_corr: sandbox.z_jungryo_lee.tv_voc_weighted_corr
@@ -168,6 +169,13 @@ classification:
   memo_summarize_threshold: 200
   summarize_batch_size: 20
   sparse_topic_min_rows: 10
+  refinement_input_table_key: classification_full
+  refinement_max_analysis_memos_per_group: 300
+  refinement_existing_topic_min_score: 1.4
+  refinement_existing_topic_min_margin: 0.25
+  refinement_new_topic_candidate_min_count: 5
+  refinement_new_topic_candidate_min_ratio: 0.02
+  refinement_max_candidate_rows: 200
 
 driver_analysis:
   enabled: false

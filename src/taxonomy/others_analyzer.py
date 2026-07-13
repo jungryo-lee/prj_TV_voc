@@ -29,10 +29,11 @@ def get_others_analysis_config(config: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def load_classification_detail_df(
+def load_classification_input_df(
     spark: SparkSession,
     config: dict[str, Any],
     *,
+    input_table_key: str = "classification_detail",
     cate_1_depth: str | None = None,
     cate_2_depth: str | None = None,
     sc_measurement: int | None = None,
@@ -41,8 +42,8 @@ def load_classification_detail_df(
     taxonomy_version: str | None = None,
     run_id: str | None = None,
 ) -> DataFrame:
-    """Load classification_detail rows with optional filters."""
-    table_name = get_output_table(config, "classification_detail")
+    """Load classification rows from detail/full output with optional filters."""
+    table_name = get_output_table(config, input_table_key)
     df = spark.table(table_name)
 
     if cate_1_depth is not None:
@@ -63,15 +64,32 @@ def load_classification_detail_df(
     return df
 
 
-def load_others_detail_df(
+def load_classification_detail_df(
     spark: SparkSession,
     config: dict[str, Any],
     **filters: Any,
 ) -> DataFrame:
-    """Load only 'others' rows from classification_detail."""
-    return load_classification_detail_df(
+    """Backward-compatible loader for classification_detail rows."""
+    return load_classification_input_df(
         spark,
         config,
+        input_table_key="classification_detail",
+        **filters,
+    )
+
+
+def load_others_detail_df(
+    spark: SparkSession,
+    config: dict[str, Any],
+    *,
+    input_table_key: str = "classification_detail",
+    **filters: Any,
+) -> DataFrame:
+    """Load only 'others' rows from classification detail/full output."""
+    return load_classification_input_df(
+        spark,
+        config,
+        input_table_key=input_table_key,
         **filters,
     ).where(F.col("pred_topic_type") == "others")
 
@@ -194,6 +212,7 @@ def analyze_others(
     spark: SparkSession,
     config: dict[str, Any],
     *,
+    input_table_key: str = "classification_detail",
     cate_1_depth: str | None = None,
     cate_2_depth: str | None = None,
     sc_measurement: int | None = None,
@@ -205,9 +224,10 @@ def analyze_others(
     """Run others analysis and return both summary and candidate DataFrames."""
     analysis_cfg = get_others_analysis_config(config)
 
-    detail_df = load_classification_detail_df(
+    detail_df = load_classification_input_df(
         spark,
         config,
+        input_table_key=input_table_key,
         cate_1_depth=cate_1_depth,
         cate_2_depth=cate_2_depth,
         sc_measurement=sc_measurement,
@@ -232,4 +252,5 @@ def analyze_others(
         "others_group_summary_df": others_group_summary_df,
         "new_topic_candidate_df": new_topic_candidate_df,
         "analysis_config": analysis_cfg,
+        "input_table_key": input_table_key,
     }
