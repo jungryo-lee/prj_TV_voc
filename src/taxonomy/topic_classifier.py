@@ -944,6 +944,50 @@ Rules:
     }
 
 
+def rescue_others_from_match_reason(
+    decision: dict[str, Any],
+    *,
+    topic_pool: dict[str, Any],
+) -> dict[str, Any]:
+    """Promote 'others' to a real topic when match_reason names one valid topic.
+
+    This is a conservative post-process:
+    - applies only to llm_fallback -> others
+    - requires exactly one topic name from the actual topic_pool in match_reason
+    """
+    pred_topic_type = _clean_text(decision.get("pred_topic_type")).lower()
+    classification_stage = _clean_text(decision.get("classification_stage"))
+    match_reason = _clean_text(decision.get("match_reason"))
+
+    if pred_topic_type != "others":
+        return decision
+    if classification_stage != "llm_fallback":
+        return decision
+    if not match_reason:
+        return decision
+
+    valid_topics = [
+        _clean_text(row.get("topic"))
+        for row in (topic_pool.get("topics") or [])
+        if _clean_text(row.get("topic")) and _clean_text(row.get("topic")) != "기타"
+    ]
+    matched_topics = [topic for topic in valid_topics if topic in match_reason]
+
+    if len(matched_topics) != 1:
+        return decision
+
+    rescued_topic = matched_topics[0]
+    rescued = dict(decision)
+    rescued["pred_topic"] = rescued_topic
+    rescued["pred_topic_type"] = "topic"
+    rescued["classification_stage"] = "llm_reason_recovered"
+    rescued["review_needed_yn"] = False
+    rescued["match_reason"] = (
+        match_reason + f" | rescued_from_match_reason={rescued_topic}"
+    )
+    return rescued
+
+
 def normalize_classification_result(
     base_row: dict[str, Any],
     *,
@@ -1072,6 +1116,10 @@ def classify_topic_for_group(
                     candidate_topics=candidate_topics,
                     config=effective_config,
                     model_key=model_key,
+                )
+                decision = rescue_others_from_match_reason(
+                    decision,
+                    topic_pool=normalized_topic_pool,
                 )
                 llm_used_yn = True
             else:
