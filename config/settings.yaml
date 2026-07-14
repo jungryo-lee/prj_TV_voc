@@ -32,6 +32,8 @@ tables:
     classification_detail: sandbox.z_jungryo_lee.tv_voc_classification_detail
     classification_full: sandbox.z_jungryo_lee.tv_voc_classification_full
     classification_summary: sandbox.z_jungryo_lee.tv_voc_classification_summary
+    review_decision: sandbox.z_jungryo_lee.tv_voc_review_decision
+    topic_pool_revision: sandbox.z_jungryo_lee.tv_voc_topic_pool_revision
     driver_input: sandbox.z_jungryo_lee.tv_voc_driver_input
     weighted_corr: sandbox.z_jungryo_lee.tv_voc_weighted_corr
     weighted_regression: sandbox.z_jungryo_lee.tv_voc_weighted_regression
