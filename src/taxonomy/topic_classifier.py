@@ -100,6 +100,75 @@ GENERIC_OVERALL_POSITIVE_PATTERNS: list[str] = [
     "love the {target}",
 ]
 
+GENERIC_PURE_SENTIMENT_TERMS: list[str] = [
+    "good",
+    "great",
+    "nice",
+    "excellent",
+    "awesome",
+    "amazing",
+    "wonderful",
+    "perfect",
+    "cool",
+    "best",
+    "love",
+    "loved",
+    "like",
+    "liked",
+    "satisfied",
+    "bad",
+    "poor",
+    "terrible",
+    "awful",
+    "worst",
+    "좋다",
+    "좋은",
+    "좋고",
+    "좋네요",
+    "좋아요",
+    "좋음",
+    "만족",
+    "만족합니다",
+    "최고",
+    "훌륭하다",
+    "괜찮다",
+    "별로",
+    "나쁘다",
+    "불만",
+]
+
+PURE_SENTIMENT_CONNECTOR_TERMS: set[str] = {
+    "a",
+    "an",
+    "and",
+    "are",
+    "is",
+    "it",
+    "its",
+    "so",
+    "super",
+    "the",
+    "this",
+    "to",
+    "too",
+    "very",
+    "really",
+    "완전",
+    "정말",
+    "진짜",
+    "너무",
+    "매우",
+    "아주",
+    "좀",
+    "은",
+    "는",
+    "이",
+    "가",
+    "을",
+    "를",
+    "도",
+}
+
 TOPIC_DIRECT_SIGNAL_HINTS: dict[str, list[str]] = {
     "앱 바로가기 버튼": [
         "app",
@@ -347,6 +416,32 @@ def _contains_any_term(text: str, terms: list[str]) -> bool:
     return any(term.lower() in normalized for term in terms if _clean_text(term))
 
 
+def _normalize_for_phrase_match(text: str) -> str:
+    """Normalize free text for compact phrase-level checks."""
+    lowered = _clean_text(text).lower()
+    normalized = re.sub(r"[^\w가-힣]+", " ", lowered)
+    return f" {' '.join(normalized.split())} "
+
+
+def _remove_phrase_terms(text: str, terms: list[str]) -> str:
+    """Remove phrase terms from normalized text."""
+    normalized = _normalize_for_phrase_match(text)
+    for term in sorted(
+        (_normalize_for_phrase_match(value).strip() for value in terms if _clean_text(value)),
+        key=len,
+        reverse=True,
+    ):
+        if not term:
+            continue
+        normalized = re.sub(
+            rf"(?<!\w){re.escape(term)}(?!\w)",
+            " ",
+            normalized,
+        )
+        normalized = f" {' '.join(normalized.split())} "
+    return " ".join(normalized.split())
+
+
 def _contains_target_attached_term(
     text: str,
     *,
@@ -430,6 +525,16 @@ def _expand_generic_neutral_terms(tokens: list[str]) -> list[str]:
     return _clean_term_list(expanded, max_items=50)
 
 
+def build_category_target_terms(cate_1_depth: str, cate_2_depth: str) -> list[str]:
+    """Build category-level target terms without topic-pool-specific hints."""
+    tokens = _extract_label_tokens(cate_1_depth) + _extract_label_tokens(cate_2_depth)
+    terms: list[str] = []
+    terms.extend(CATEGORY_NEUTRAL_TARGET_TERMS.get(cate_2_depth, []))
+    terms.extend(tokens)
+    terms.extend(_expand_generic_neutral_terms(tokens))
+    return _clean_term_list(terms, max_items=50)
+
+
 def build_neutral_target_terms(
     cate_1_depth: str,
     cate_2_depth: str,
@@ -464,6 +569,54 @@ def build_neutral_target_terms(
             terms.extend(_extract_label_tokens(topic_row.get("topic", "")))
 
     return _clean_term_list(terms, max_items=80)
+
+
+def is_pure_category_target_sentiment(
+    memo_text: str,
+    *,
+    cate_1_depth: str,
+    cate_2_depth: str,
+    sentiment_terms: list[str],
+    max_text_length: int,
+) -> bool:
+    """Return whether memo is only category target + pure sentiment.
+
+    This is category-generic: examples include "great apps", "good channels",
+    "remote is great", or equivalent short Korean expressions. It intentionally
+    uses only category-level target terms so detailed topic labels do not make
+    feature-specific statements look like overall sentiment.
+    """
+    memo_clean = _clean_text(memo_text)
+    if not memo_clean or len(memo_clean) > int(max_text_length):
+        return False
+
+    target_terms = build_category_target_terms(cate_1_depth, cate_2_depth)
+    pure_sentiment_terms = _clean_term_list(
+        (sentiment_terms or []) + GENERIC_PURE_SENTIMENT_TERMS,
+        max_items=200,
+    )
+    if not target_terms or not pure_sentiment_terms:
+        return False
+
+    normalized = _normalize_for_phrase_match(memo_clean)
+    has_target = any(
+        re.search(rf"(?<!\w){re.escape(_normalize_for_phrase_match(term).strip())}(?!\w)", normalized)
+        for term in target_terms
+        if _normalize_for_phrase_match(term).strip()
+    )
+    has_sentiment = any(
+        re.search(rf"(?<!\w){re.escape(_normalize_for_phrase_match(term).strip())}(?!\w)", normalized)
+        for term in pure_sentiment_terms
+        if _normalize_for_phrase_match(term).strip()
+    )
+    if not has_target or not has_sentiment:
+        return False
+
+    leftover = _remove_phrase_terms(memo_clean, target_terms + pure_sentiment_terms)
+    if not leftover:
+        return True
+
+    return all(token in PURE_SENTIMENT_CONNECTOR_TERMS for token in leftover.split())
 
 
 def build_dynamic_overall_examples(
@@ -781,6 +934,22 @@ def apply_overall_rules(
     overall_terms = rule_profile.get("overall_sentiment_terms", [])
 
     has_overall_term = _contains_any_term(memo_lower, overall_terms)
+    if is_pure_category_target_sentiment(
+        memo_clean,
+        cate_1_depth=cate_1_depth,
+        cate_2_depth=cate_2_depth,
+        sentiment_terms=overall_terms,
+        max_text_length=overall_max_text_length,
+    ):
+        return {
+            "is_overall": True,
+            "stage": "rule_overall_target_sentiment",
+            "pred_topic": rule_profile.get("overall_topic_name"),
+            "pred_topic_type": "overall",
+            "confidence_score": 0.99,
+            "match_reason": "pure_category_target_sentiment",
+        }
+
     has_feature_term = _contains_target_attached_term(
         memo_lower,
         neutral_terms=neutral_terms,

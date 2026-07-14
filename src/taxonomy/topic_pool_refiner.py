@@ -85,6 +85,12 @@ def get_topic_pool_refinement_config(config: dict[str, Any]) -> dict[str, Any]:
         "new_topic_candidate_min_count": int(
             classification_cfg.get("refinement_new_topic_candidate_min_count", 5)
         ),
+        "new_topic_candidate_min_distinct_memo_ids": int(
+            classification_cfg.get(
+                "refinement_new_topic_candidate_min_distinct_memo_ids",
+                3,
+            )
+        ),
         "new_topic_candidate_min_ratio": float(
             classification_cfg.get("refinement_new_topic_candidate_min_ratio", 0.02)
         ),
@@ -297,10 +303,15 @@ def build_new_topic_candidate_df(
     detail_df: DataFrame,
     *,
     candidate_min_count: int,
+    candidate_min_distinct_memo_ids: int,
     candidate_min_ratio: float,
     max_candidate_rows: int,
 ) -> DataFrame:
-    """Surface repeated others patterns as possible new topic candidates."""
+    """Surface repeated others patterns as possible new topic candidates.
+
+    A raw-row repeat of one memo_id is not enough to create a new topic. New-topic
+    candidates should be supported by multiple distinct normalized memos.
+    """
     others_df = detail_df.where(F.col("pred_topic_type") == "others")
     group_keys = [
         "cate_1_depth",
@@ -334,6 +345,10 @@ def build_new_topic_candidate_df(
             ).otherwise(F.lit(0.0)),
         )
         .where(F.col("candidate_cnt") >= int(candidate_min_count))
+        .where(
+            F.col("candidate_distinct_memo_id_cnt")
+            >= int(candidate_min_distinct_memo_ids)
+        )
         .where(F.col("candidate_ratio") >= float(candidate_min_ratio))
         .withColumn("suggested_action", F.lit("consider_new_topic"))
         .withColumn("candidate_reason", F.lit("repeated_others_pattern"))
@@ -401,6 +416,9 @@ def refine_topic_pool_candidates(
     new_topic_candidate_df = build_new_topic_candidate_df(
         detail_df,
         candidate_min_count=refinement_cfg["new_topic_candidate_min_count"],
+        candidate_min_distinct_memo_ids=refinement_cfg[
+            "new_topic_candidate_min_distinct_memo_ids"
+        ],
         candidate_min_ratio=refinement_cfg["new_topic_candidate_min_ratio"],
         max_candidate_rows=refinement_cfg["max_candidate_rows"],
     )
