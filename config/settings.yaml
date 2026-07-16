@@ -173,8 +173,8 @@ classification:
   sparse_topic_min_rows: 10
   refinement_input_table_key: classification_full
   refinement_max_analysis_memos_per_group: 300
-  refinement_existing_topic_min_score: 1.4
-  refinement_existing_topic_min_margin: 0.25
+  refinement_existing_topic_min_score: 0.8
+  refinement_existing_topic_min_margin: 0.0
   refinement_new_topic_candidate_min_count: 5
   refinement_new_topic_candidate_min_distinct_memo_ids: 3
   refinement_new_topic_candidate_min_ratio: 0.02

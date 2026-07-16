@@ -185,6 +185,26 @@ def build_topic_pool_by_group(topic_pool_rows: list[dict[str, Any]]) -> dict[tup
     }
 
 
+def find_topic_from_match_reason(
+    match_reason: str,
+    topic_pool: dict[str, Any],
+) -> str:
+    """Return one topic explicitly mentioned in the LLM match reason, if any."""
+    reason = _clean_text(match_reason)
+    if not reason:
+        return ""
+
+    topic_names = [
+        _clean_text(row.get("topic"))
+        for row in (topic_pool.get("topics") or [])
+        if _clean_text(row.get("topic"))
+    ]
+    matched_topics = [topic for topic in topic_names if topic in reason]
+    if len(matched_topics) != 1:
+        return ""
+    return matched_topics[0]
+
+
 def load_refinement_input_df(
     spark: SparkSession,
     config: dict[str, Any],
@@ -255,6 +275,37 @@ def build_existing_topic_reassignment_df(
         )
         topic_pool = topic_pool_by_group.get(key)
         if not topic_pool:
+            continue
+
+        reason_topic = find_topic_from_match_reason(
+            _clean_text(row_dict.get("match_reason")),
+            topic_pool,
+        )
+        if reason_topic:
+            output_rows.append(
+                {
+                    "cate_1_depth": key[0],
+                    "cate_2_depth": key[1],
+                    "sc_measurement": key[2],
+                    "memo_id": _clean_text(row_dict.get("memo_id")),
+                    "memo": row_dict.get("memo"),
+                    "memo_norm": _clean_text(row_dict.get("memo_norm")),
+                    "current_pred_topic": _clean_text(row_dict.get("pred_topic")),
+                    "current_pred_topic_type": _clean_text(row_dict.get("pred_topic_type")),
+                    "suggested_topic": reason_topic,
+                    "suggested_action": "reassign_existing_topic",
+                    "suggestion_score": 9.0,
+                    "candidate_topics_json": _json_dumps(
+                        [{"topic": reason_topic, "source": "match_reason"}]
+                    ),
+                    "suggestion_reason": "topic_name_found_in_match_reason",
+                    "model_version": _clean_text(row_dict.get("model_version")),
+                    "prompt_version": _clean_text(row_dict.get("prompt_version")),
+                    "taxonomy_version": _clean_text(row_dict.get("taxonomy_version")),
+                    "run_id": _clean_text(row_dict.get("run_id")),
+                    "run_date": _clean_text(row_dict.get("run_date")),
+                }
+            )
             continue
 
         candidates = build_topic_candidates(
