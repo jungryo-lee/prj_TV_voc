@@ -65,7 +65,7 @@ dash_app.layout = dbc.Container(
                     [
                         html.H1("TV VOC AI Review Console", className="mt-4"),
                         html.P(
-                            "Parquet snapshot 기반으로 분류 현황과 기타 리뷰 검토를 수행하는 Databricks Apps 화면입니다.",
+                            "sandbox 테이블을 직접 조회하여 분류 현황과 기타 리뷰 검토를 수행하는 Databricks Apps 화면입니다.",
                             className="text-muted",
                         ),
                     ],
@@ -78,8 +78,8 @@ dash_app.layout = dbc.Container(
                 dbc.Col(
                     dbc.Alert(
                         [
-                            html.Strong("Data root: "),
-                            html.Code(os.environ.get("VOC_APP_DATA_ROOT", "app_data")),
+                            html.Strong("Data source: "),
+                            html.Code("Databricks SQL tables"),
                         ],
                         color="light",
                     ),
@@ -104,7 +104,7 @@ dash_app.layout = dbc.Container(
 
 @dash_app.callback(Output("tab-content", "children"), Input("main-tabs", "value"))
 def render_tab(tab_value: str):
-    """Render each app tab from the current Parquet snapshots."""
+    """Render each app tab from current Databricks SQL tables."""
     summary_df = load_classification_summary()
     topic_pool_df = load_topic_pool()
     others_df = load_others_review_candidates()
@@ -112,7 +112,7 @@ def render_tab(tab_value: str):
     if tab_value == "summary":
         if summary_df.empty:
             return _empty_message(
-                "classification_summary Parquet이 아직 없습니다. app exporter 실행 후 다시 확인하세요."
+                "classification_full 테이블에서 조회된 분류 현황이 없습니다. 배치 실행 결과와 App SQL 접속 설정을 확인하세요."
             )
 
         return dbc.Container(
@@ -173,7 +173,7 @@ def render_tab(tab_value: str):
 
     if tab_value == "topic-pool":
         if topic_pool_df.empty:
-            return _empty_message("topic_pool Parquet이 아직 없습니다.")
+            return _empty_message("topic_pool 테이블에서 조회된 주제 목록이 없습니다.")
 
         return dash_table.DataTable(
             data=topic_pool_df.to_dict("records"),
@@ -187,7 +187,7 @@ def render_tab(tab_value: str):
 
     topic_options = _topic_options(topic_pool_df)
     if others_df.empty:
-        return _empty_message("others_review_candidates Parquet이 아직 없습니다.")
+        return _empty_message("classification_full 테이블에서 조회된 기타 리뷰 후보가 없습니다.")
 
     review_df = others_df.copy()
     review_df["approved_topic"] = ""
@@ -251,7 +251,7 @@ def render_tab(tab_value: str):
                     "height": "auto",
                 },
             ),
-            dbc.Button("검토 결과 Parquet 저장", id="save-review-button", color="primary", className="mt-3"),
+            dbc.Button("검토 결과 테이블 저장", id="save-review-button", color="primary", className="mt-3"),
             html.Div(id="save-review-status", className="mt-3"),
         ],
         fluid=True,
@@ -265,19 +265,29 @@ def render_tab(tab_value: str):
     prevent_initial_call=True,
 )
 def save_review_rows(_n_clicks: int, table_rows: list[dict]):
-    """Persist manually edited review decisions to the app input folder."""
+    """Persist manually edited review decisions to review_decision table."""
     if not table_rows:
         return dbc.Alert("저장할 검토 결과가 없습니다.", color="warning")
 
     review_df = pd.DataFrame(table_rows)
+    review_df = review_df[
+        review_df.apply(
+            lambda row: bool(str(row.get("approved_topic") or "").strip())
+            or bool(str(row.get("review_comment") or "").strip()),
+            axis=1,
+        )
+    ].copy()
+    if review_df.empty:
+        return dbc.Alert("변경되었거나 코멘트가 입력된 검토 결과가 없습니다.", color="warning")
+
     review_df["approved_action"] = review_df.apply(
         lambda row: "reassign_existing_topic"
         if str(row.get("approved_topic") or "").strip()
         else "keep_others",
         axis=1,
     )
-    saved_path = save_manual_review_decisions(review_df)
-    return dbc.Alert(f"검토 결과 저장 완료: {saved_path}", color="success")
+    saved_result = save_manual_review_decisions(review_df)
+    return dbc.Alert(f"검토 결과 저장 완료: {saved_result}", color="success")
 
 
 if __name__ == "__main__":

@@ -3,3 +3,5 @@ __pycache__/
 *.pyc
 app_data/**/*.parquet
 app_data/**/_delta_log/
+dastaset/*.parquet
+dataset/*.parquet

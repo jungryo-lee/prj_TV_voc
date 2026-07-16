@@ -10,7 +10,13 @@ runtime:
   run_id_prefix: tv_voc
 
 app:
-  data_root: /Workspace/Users/jungryo.lee@lge.com/prj_TV_voc/app_data
+  data_mode: table
+  model_key: gpt_55
+  target_cate_1_depth: "07. 스마트 사용성"
+  target_cate_2_depth: "07-01. 채널/컨텐츠 APP"
+  target_sc_measurement: 1
+  max_review_rows: 300
+  warehouse_http_path: null
 
 unity_catalog:
   catalog: sandbox

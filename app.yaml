@@ -3,7 +3,7 @@ command:
   - app.py
 
 env:
-  - name: VOC_APP_DATA_ROOT
-    value: app_data
   - name: PORT
     value: "8000"
+  - name: VOC_APP_MODEL_KEY
+    value: gpt_55
