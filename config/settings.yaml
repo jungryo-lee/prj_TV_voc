@@ -9,12 +9,15 @@ runtime:
   run_date: null
   run_id_prefix: tv_voc
 
+app:
+  data_root: /Workspace/Users/jungryo.lee@lge.com/prj_TV_voc/app_data
+
 unity_catalog:
   catalog: sandbox
   schema: z_jungryo_lee
 
 source:
-  raw_review_table: kic_data_ods.buzzmetrix.buzzmetrix
+  raw_review_table: sandbox.t_online_voc_analysis.buzzmetrix
   model_meta_table: sandbox.z_jungryo_lee.buzz_model_meta
   sentiment_source_table: sandbox.z_jungryo_lee.buzz_sc_score_dataset
 

@@ -1,0 +1,5 @@
+name: tv-voc-ai-review-console
+description: Databricks Apps console for TV VOC taxonomy review and manual fallback.
+version: 0.1.0
+entrypoint: app.py
+framework: dash
