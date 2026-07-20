@@ -11,6 +11,7 @@ runtime:
 
 app:
   data_mode: table
+  classification_table_key: classification_detail
   model_key: gpt_55
   target_cate_1_depth: null
   target_cate_2_depth: null

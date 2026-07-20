@@ -44,7 +44,7 @@ prj_TV_voc/
 Databricks App
     ↓
 sandbox.z_jungryo_lee.tv_voc_topic_pool
-sandbox.z_jungryo_lee.tv_voc_classification_full
+sandbox.z_jungryo_lee.tv_voc_classification_detail 또는 tv_voc_classification_full
     ↓
 사람 검토 / topic 선택
     ↓
@@ -58,7 +58,7 @@ classification_full update
 ## 실행 순서
 
 1. 기존 taxonomy pipeline 실행
-2. `classification_full` 생성 확인
+2. App에서 조회할 분류 결과 테이블 생성 확인
 3. Databricks App SQL 접속 환경변수 설정
 4. Databricks App에서 `app.py` 실행
 5. App에서 기타 리뷰 검토 결과를 `review_decision` 테이블에 저장
@@ -82,3 +82,10 @@ Databricks SQL connector를 사용한다.
 
 `VOC_APP_MODEL_KEY`, `VOC_APP_TARGET_CATE_1_DEPTH`, `VOC_APP_TARGET_CATE_2_DEPTH`,
 `VOC_APP_TARGET_SC_MEASUREMENT`를 지정하면 App 대상 그룹을 환경변수로 바꿀 수 있다.
+
+샘플 검수 단계에서는 `config/settings_intellytics.yaml`의
+`app.classification_table_key: classification_detail`을 사용하여
+`tv_voc_classification_detail_intellytics`를 조회한다.
+
+전체 row 확장 후 운영 검수 단계에서는 `VOC_APP_CLASSIFICATION_TABLE_KEY=classification_full`
+또는 설정 파일 변경으로 `tv_voc_classification_full_intellytics`를 조회한다.

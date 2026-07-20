@@ -16,7 +16,9 @@ from databricks import sql
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
-SETTINGS_PATH = Path(os.environ.get("VOC_SETTINGS_PATH", PROJECT_ROOT / "config" / "settings.yaml"))
+SETTINGS_PATH = Path(
+    os.environ.get("VOC_SETTINGS_PATH", PROJECT_ROOT / "config" / "settings_intellytics.yaml")
+)
 
 
 def _load_settings() -> dict[str, Any]:
@@ -45,6 +47,17 @@ def _model_version() -> str:
     """Resolve the active app model version."""
     model_key = str(_app_setting("model_key", "gpt_55"))
     return str(SETTINGS["llm"]["models"][model_key]["model_version"])
+
+
+def _classification_table_key() -> str:
+    """Resolve which classification output the app should read."""
+    return str(_app_setting("classification_table_key", "classification_full"))
+
+
+def _classification_table_name() -> str:
+    """Return the configured classification table for summary and review."""
+    table_key = _classification_table_key()
+    return _output_table(table_key)
 
 
 def _version_value(key: str) -> str:
@@ -168,8 +181,8 @@ def load_topic_pool() -> pd.DataFrame:
 
 
 def load_classification_summary() -> pd.DataFrame:
-    """Load topic distribution summary directly from classification_full."""
-    table_name = _output_table("classification_full")
+    """Load topic distribution summary from the configured classification table."""
+    table_name = _classification_table_name()
     query = f"""
         SELECT
             cate_1_depth,
@@ -199,8 +212,8 @@ def load_classification_summary() -> pd.DataFrame:
 
 
 def load_others_review_candidates() -> pd.DataFrame:
-    """Load distinct others rows for human review from classification_full."""
-    table_name = _output_table("classification_full")
+    """Load distinct others rows for human review from the configured classification table."""
+    table_name = _classification_table_name()
     max_rows = int(_app_setting("max_review_rows", 300))
     query = f"""
         SELECT
@@ -303,7 +316,7 @@ def save_manual_review_decisions(review_df: pd.DataFrame) -> str:
             f"'{_sql_escape(str(row.get('reviewer') or 'databricks_app'))}', "
             f"'{_sql_escape(str(row.get('review_comment') or ''))}', "
             f"'{_sql_escape(created_at)}', "
-            "'classification_full', "
+            f"'{_sql_escape(_classification_table_key())}', "
             f"'{_sql_escape(str(row.get('run_id') or ''))}', "
             f"'{_sql_escape(str(row.get('run_date') or ''))}', "
             f"'{_sql_escape(str(row.get('prompt_version') or _version_value('prompt_version')))}', "

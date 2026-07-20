@@ -112,7 +112,7 @@ def render_tab(tab_value: str):
     if tab_value == "summary":
         if summary_df.empty:
             return _empty_message(
-                "classification_full 테이블에서 조회된 분류 현황이 없습니다. 배치 실행 결과와 App SQL 접속 설정을 확인하세요."
+                "설정된 분류 결과 테이블에서 조회된 분류 현황이 없습니다. 배치 실행 결과와 App SQL 접속 설정을 확인하세요."
             )
 
         return dbc.Container(
@@ -187,7 +187,7 @@ def render_tab(tab_value: str):
 
     topic_options = _topic_options(topic_pool_df)
     if others_df.empty:
-        return _empty_message("classification_full 테이블에서 조회된 기타 리뷰 후보가 없습니다.")
+        return _empty_message("설정된 분류 결과 테이블에서 조회된 기타 리뷰 후보가 없습니다.")
 
     review_df = others_df.copy()
     review_df["approved_topic"] = ""
