@@ -1,0 +1,217 @@
+path:
+  project_root: /Workspace/Users/jungryo.lee@lge.com/prj_TV_voc
+  env: /Workspace/Users/jungryo.lee@lge.com/prj_TV_voc/.env
+  prompts: /Workspace/Users/jungryo.lee@lge.com/prj_TV_voc/config/prompts.yaml
+
+runtime:
+  mode: test
+  timezone: Asia/Seoul
+  run_date: null
+  run_id_prefix: tv_voc_intellytics
+
+app:
+  data_mode: table
+  model_key: gpt_55
+  target_cate_1_depth: null
+  target_cate_2_depth: null
+  target_sc_measurement: null
+  max_review_rows: 300
+  warehouse_http_path: null
+
+unity_catalog:
+  catalog: sandbox
+  schema: z_jungryo_lee
+
+source:
+  raw_review_table: sandbox.z_jungryo_lee.intellytics_display_online_voc
+  model_meta_table: sandbox.z_jungryo_lee.buzz_model_meta
+  sentiment_source_table: sandbox.z_jungryo_lee.buzz_sc_score_dataset
+
+reference:
+  category_rule_table: sandbox.z_jungryo_lee.tv_voc_category_rule_master
+  category_master_table: sandbox.z_jungryo_lee.tv_voc_category_master
+  taxonomy_definition_table: sandbox.z_jungryo_lee.tv_voc_taxonomy_definition
+  prompt_registry_table: sandbox.z_jungryo_lee.tv_voc_prompt_registry
+
+tables:
+  outputs:
+    rule_profile: sandbox.z_jungryo_lee.tv_voc_rule_profile_intellytics
+    clue_keyword: sandbox.z_jungryo_lee.tv_voc_clue_keyword_intellytics
+    topic_pool: sandbox.z_jungryo_lee.tv_voc_topic_pool_intellytics
+    classification_detail: sandbox.z_jungryo_lee.tv_voc_classification_detail_intellytics
+    classification_full: sandbox.z_jungryo_lee.tv_voc_classification_full_intellytics
+    classification_summary: sandbox.z_jungryo_lee.tv_voc_classification_summary_intellytics
+    review_decision: sandbox.z_jungryo_lee.tv_voc_review_decision_intellytics
+    topic_pool_revision: sandbox.z_jungryo_lee.tv_voc_topic_pool_revision_intellytics
+    driver_input: sandbox.z_jungryo_lee.tv_voc_driver_input_intellytics
+    weighted_corr: sandbox.z_jungryo_lee.tv_voc_weighted_corr_intellytics
+    weighted_regression: sandbox.z_jungryo_lee.tv_voc_weighted_regression_intellytics
+    driver_selection: sandbox.z_jungryo_lee.tv_voc_driver_selection_intellytics
+    ai_insight: sandbox.z_jungryo_lee.tv_voc_ai_insight_intellytics
+    dashboard_export: sandbox.z_jungryo_lee.tv_voc_dashboard_export_intellytics
+
+  logs:
+    pipeline_progress: sandbox.z_jungryo_lee.tv_voc_pipeline_progress_intellytics
+    pipeline_failed: sandbox.z_jungryo_lee.tv_voc_pipeline_failed_intellytics
+    pipeline_run_log: sandbox.z_jungryo_lee.tv_voc_pipeline_run_log_intellytics
+
+llm:
+  provider: databricks
+  default_model_key: sonnet_46
+  max_retries: 3
+  backoff_base: 1.8
+  timeout_seconds: 60
+
+  models:
+    sonnet_46:
+      endpoint: databricks-claude-sonnet-4-6
+      model_version: claude-sonnet-4-6
+      inference:
+        temperature: 0.0
+        max_tokens: 2200
+
+    gpt_55:
+      endpoint: databricks-gpt-5-5
+      model_version: gpt-5-5
+      inference:
+        max_tokens: 2200
+
+version:
+  prompt_version: v1_intellytics
+  taxonomy_version: v1_intellytics
+  model_version: claude-sonnet-4
+  pipeline_version: v1_intellytics
+
+metadata_columns:
+  run_id: run_id
+  run_date: run_date
+  pipeline_stage: pipeline_stage
+  prompt_version: prompt_version
+  taxonomy_version: taxonomy_version
+  model_version: model_version
+  pipeline_version: pipeline_version
+  source_period_start: source_period_start
+  source_period_end: source_period_end
+  is_latest: is_latest
+  created_at: created_at
+  created_by: created_by
+
+taxonomy:
+  target_sentiments: [1, -1]
+  exclude_category_prefix: "***"
+  min_group_size: 100
+  max_sample_rows: 1000
+  max_rule_sample_rows: 800
+  min_final_topics: 7
+  max_final_topics: 17
+  include_overall_category: true
+  review_required_default: true
+
+rule_profile:
+  enabled: true
+  resume_from_checkpoint: true
+  limit_group_count: null
+  prompt_key: rule_profile_system
+  output_json_schema: rule_profile_v1
+  max_prompt_memos_default: 200
+  max_prompt_memos_by_model:
+    sonnet_46: 200
+    gpt_55: 200
+
+topic_pool:
+  enabled: true
+  prompt_key: topic_pool_system
+  output_json_schema: topic_pool_v1
+  max_prompt_memos_default: 200
+  max_prompt_memos_by_model:
+    sonnet_46: 200
+    gpt_55: 200
+  raise_on_invalid_topic_count: true
+  topic_count_overrides:
+    "07. 스마트 사용성||07-01. 채널/컨텐츠 APP":
+      min_final_topics: 8
+      max_final_topics: 18
+    "07. 스마트 사용성||07-03. 메뉴 구성/UI":
+      min_final_topics: 8
+      max_final_topics: 18
+    "07. 스마트 사용성||07-04. SW/OS":
+      min_final_topics: 8
+      max_final_topics: 18
+    "07. 스마트 사용성||07-06. 리모컨 사용성":
+      min_final_topics: 8
+      max_final_topics: 18
+    "07. 스마트 사용성||07-08. 음성 인식/조작":
+      min_final_topics: 8
+      max_final_topics: 18
+    "07. 스마트 사용성||07-05. 컨텐츠 탐색 사용성":
+      min_final_topics: 6
+      max_final_topics: 14
+    "07. 스마트 사용성||07-09. 게임 기능":
+      min_final_topics: 6
+      max_final_topics: 14
+    "07. 스마트 사용성||07-11. 홈 IoT":
+      min_final_topics: 6
+      max_final_topics: 14
+    "07. 스마트 사용성||07-12. 모바일 연동":
+      min_final_topics: 6
+      max_final_topics: 14
+    "01. 사이즈||01-01. TV 사이즈":
+      min_final_topics: 4
+      max_final_topics: 8
+    "09. 친환경||09-01. 에너지 효율":
+      min_final_topics: 4
+      max_final_topics: 8
+    "10. 가격||10-01. 가격/가격대비 가치":
+      min_final_topics: 4
+      max_final_topics: 8
+    "11. 브랜드||11-01. 브랜드":
+      min_final_topics: 4
+      max_final_topics: 8
+    "13. 전반적 평가||13-01. 전반적 평가":
+      min_final_topics: 4
+      max_final_topics: 8
+
+classification:
+  enabled: false
+  prompt_key: topic_classification_system
+  max_sample_rows_per_group: 1000
+  dedupe_before_sample: true
+  classify_batch_size: 25
+  memo_summarize_threshold: 200
+  summarize_batch_size: 20
+  sparse_topic_min_rows: 10
+  refinement_input_table_key: classification_full
+  refinement_max_analysis_memos_per_group: 300
+  refinement_existing_topic_min_score: 0.8
+  refinement_existing_topic_min_margin: 0.0
+  refinement_new_topic_candidate_min_count: 5
+  refinement_new_topic_candidate_min_distinct_memo_ids: 3
+  refinement_new_topic_candidate_min_ratio: 0.02
+  refinement_max_candidate_rows: 200
+
+driver_analysis:
+  enabled: false
+  corr_threshold: 0.1
+  pvalue_max: 0.1
+  abs_coef_threshold: 0.1
+  weight_method: sqrt_total_count
+  group_dims:
+    - all
+    - country
+    - brand_name
+    - device_type
+    - year
+
+insight:
+  enabled: false
+  prompt_key: ai_insight_system
+  max_drivers_per_key_full: 4
+  max_drivers_per_key_compact: 3
+  max_diff_stats_full: 10
+
+pipeline:
+  overwrite_output: false
+  save_failed_rows: true
+  save_progress: true
+  require_human_review_for_new_category: true
+  latest_flag_strategy: true
