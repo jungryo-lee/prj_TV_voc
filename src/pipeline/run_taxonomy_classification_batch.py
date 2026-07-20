@@ -511,6 +511,7 @@ def run_taxonomy_classification_batch(
     source_period_end: str | None = None,
     resume_from_checkpoint: bool = True,
     cleanup_checkpoint_on_success: bool = True,
+    continue_on_group_failure: bool = False,
     print_progress: bool = True,
 ) -> dict[str, Any]:
     """Run taxonomy design and 1st-pass topic classification for selected groups.
@@ -519,6 +520,7 @@ def run_taxonomy_classification_batch(
     - persists each group's outputs immediately
     - records checkpoint rows after each successful group
     - resumes by skipping already completed groups with the same checkpoint key
+    - can continue to the next group when one group repeatedly fails
     - clears Spark/Python cache after each group and after full completion
     """
     effective_config = config or load_config(config_path)
@@ -557,8 +559,10 @@ def run_taxonomy_classification_batch(
         )
 
     classification_summaries: list[dict[str, Any]] = []
+    failed_groups: list[dict[str, Any]] = []
     processed_group_count = 0
     skipped_group_count = 0
+    failed_group_count = 0
     saved_tables: dict[str, str] = {}
 
     for index, group_row in enumerate(target_groups, start=1):
@@ -783,6 +787,7 @@ def run_taxonomy_classification_batch(
                 )
 
         except Exception as error:
+            error_message = str(error)
             _append_progress_row(
                 spark,
                 effective_config,
@@ -794,7 +799,7 @@ def run_taxonomy_classification_batch(
                 sc_measurement=group_sc,
                 status="failed",
                 step="group_failed",
-                message=str(error),
+                message=error_message,
             )
             if print_progress:
                 print(
@@ -802,6 +807,22 @@ def run_taxonomy_classification_batch(
                     f"error={error}"
                 )
             _clear_runtime_memory(spark)
+            if continue_on_group_failure:
+                failed_group_count += 1
+                failed_groups.append(
+                    {
+                        "cate_1_depth": group_cate_1,
+                        "cate_2_depth": group_cate_2,
+                        "sc_measurement": group_sc,
+                        "error_message": error_message,
+                    }
+                )
+                if print_progress:
+                    print(
+                        f"[{PIPELINE_NAME}] continue | skipping failed group "
+                        f"{group_cate_1} / {group_cate_2} / {group_sc}"
+                    )
+                continue
             raise
 
         _clear_runtime_memory(spark)
@@ -813,8 +834,10 @@ def run_taxonomy_classification_batch(
     total_ambiguous = sum(row["ambiguous_count"] for row in classification_summaries)
     total_llm_used = sum(row["llm_used_count"] for row in classification_summaries)
 
-    if cleanup_checkpoint_on_success and processed_group_count + skipped_group_count == len(
-        target_groups
+    if (
+        cleanup_checkpoint_on_success
+        and failed_group_count == 0
+        and processed_group_count + skipped_group_count == len(target_groups)
     ):
         _clear_checkpoint_rows(
             spark,
@@ -831,7 +854,8 @@ def run_taxonomy_classification_batch(
     if print_progress:
         print(
             f"[{PIPELINE_NAME}] finished | processed={processed_group_count} | "
-            f"skipped={skipped_group_count} | total_rows={total_rows} | total_others={total_others}"
+            f"skipped={skipped_group_count} | failed={failed_group_count} | "
+            f"total_rows={total_rows} | total_others={total_others}"
         )
 
     return {
@@ -840,11 +864,13 @@ def run_taxonomy_classification_batch(
         "group_count": len(target_groups),
         "processed_group_count": processed_group_count,
         "skipped_group_count": skipped_group_count,
+        "failed_group_count": failed_group_count,
         "classification_count": len(classification_summaries),
         "model_key": model_key,
         "saved_tables": saved_tables,
         "target_groups": target_groups,
         "classification_summaries": classification_summaries,
+        "failed_groups": failed_groups,
         "total_row_count": total_rows,
         "total_overall_count": total_overall,
         "total_topic_count": total_topic,
