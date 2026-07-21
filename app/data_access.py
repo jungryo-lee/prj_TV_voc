@@ -43,9 +43,14 @@ def _app_setting(key: str, default: Any = None) -> Any:
     return SETTINGS.get("app", {}).get(key, default)
 
 
+def _model_key() -> str:
+    """Resolve the active app model key."""
+    return str(_app_setting("model_key", "gpt_55"))
+
+
 def _model_version() -> str:
     """Resolve the active app model version."""
-    model_key = str(_app_setting("model_key", "gpt_55"))
+    model_key = _model_key()
     return str(SETTINGS["llm"]["models"][model_key]["model_version"])
 
 
@@ -65,11 +70,12 @@ def _version_value(key: str) -> str:
     return str(SETTINGS.get("version", {}).get(key, ""))
 
 
-def _target_filter(alias: str = "") -> str:
+def _target_filter(alias: str = "", *, model_version: str | None = None) -> str:
     """Build the default app target filter clause."""
     prefix = f"{alias}." if alias else ""
+    resolved_model_version = model_version if model_version is not None else _model_version()
     conditions = [
-        f"{prefix}model_version = '{_sql_escape(_model_version())}'",
+        f"{prefix}model_version = '{_sql_escape(resolved_model_version)}'",
         f"{prefix}prompt_version = '{_sql_escape(_version_value('prompt_version'))}'",
         f"{prefix}taxonomy_version = '{_sql_escape(_version_value('taxonomy_version'))}'",
     ]
@@ -173,7 +179,7 @@ def load_topic_pool() -> pd.DataFrame:
             taxonomy_version,
             created_at
         FROM {table_name}
-        WHERE {_target_filter()}
+        WHERE {_target_filter(model_version=_model_key())}
         ORDER BY topic_order ASC
         LIMIT 500
     """
