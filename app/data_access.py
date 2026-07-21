@@ -211,6 +211,49 @@ def _execute_sql(statement: str) -> None:
             cursor.execute(statement)
 
 
+def _ensure_review_decision_table() -> None:
+    """Create review decision table when it does not exist yet."""
+    table_name = _output_table("review_decision")
+    statement = f"""
+        CREATE TABLE IF NOT EXISTS {table_name} (
+            decision_id STRING,
+            candidate_type STRING,
+            cate_1_depth STRING,
+            cate_2_depth STRING,
+            sc_measurement INT,
+            memo_id STRING,
+            memo_norm STRING,
+            sample_memo STRING,
+            current_pred_topic STRING,
+            current_pred_topic_type STRING,
+            suggested_action STRING,
+            suggested_topic STRING,
+            suggestion_score DOUBLE,
+            candidate_cnt INT,
+            candidate_distinct_memo_id_cnt INT,
+            candidate_ratio DOUBLE,
+            candidate_evidence_json STRING,
+            decision_status STRING,
+            approved_action STRING,
+            approved_topic STRING,
+            reviewer STRING,
+            review_comment STRING,
+            reviewed_at STRING,
+            source_table_key STRING,
+            run_id STRING,
+            run_date STRING,
+            prompt_version STRING,
+            taxonomy_version STRING,
+            model_version STRING,
+            pipeline_version STRING,
+            created_at STRING,
+            created_by STRING
+        )
+        USING DELTA
+    """
+    _execute_sql(statement)
+
+
 def load_app_diagnostics() -> pd.DataFrame:
     """Load app settings and row-count diagnostics for troubleshooting."""
     classification_table = _classification_table_name()
@@ -250,6 +293,26 @@ def load_app_diagnostics() -> pd.DataFrame:
             "value": _target_filter(model_version=_model_key()),
         },
     ]
+
+    try:
+        _ensure_review_decision_table()
+        rows.append(
+            {
+                "check": "review_decision_create_if_missing",
+                "target": review_decision_table,
+                "status": "ok",
+                "value": "ready",
+            }
+        )
+    except Exception as exc:  # pragma: no cover - displayed in Databricks Apps
+        rows.append(
+            {
+                "check": "review_decision_create_if_missing",
+                "target": review_decision_table,
+                "status": "error",
+                "value": repr(exc),
+            }
+        )
 
     table_checks = [
         (
@@ -426,6 +489,7 @@ def save_manual_review_decisions(review_df: pd.DataFrame) -> str:
     if review_df.empty:
         return "no rows"
 
+    _ensure_review_decision_table()
     decision_table = _output_table("review_decision")
     created_at = datetime.utcnow().isoformat(timespec="seconds")
     values: list[str] = []
