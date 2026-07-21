@@ -36,6 +36,11 @@ def _output_table(key: str) -> str:
     return str(SETTINGS["tables"]["outputs"][key])
 
 
+def _reference_table(key: str) -> str:
+    """Return a configured reference table name."""
+    return str(SETTINGS["reference"][key])
+
+
 def _is_blank_setting(value: Any) -> bool:
     """Return whether an app setting should be treated as unset."""
     if value is None:
@@ -211,6 +216,7 @@ def load_app_diagnostics() -> pd.DataFrame:
     classification_table = _classification_table_name()
     topic_pool_table = _output_table("topic_pool")
     review_decision_table = _output_table("review_decision")
+    category_mapping_table = _reference_table("category_mapping_table")
 
     rows = [
         {
@@ -271,6 +277,11 @@ def load_app_diagnostics() -> pd.DataFrame:
             review_decision_table,
             None,
         ),
+        (
+            "category_mapping_total",
+            category_mapping_table,
+            None,
+        ),
     ]
 
     for check_name, table_name, where_clause in table_checks:
@@ -300,21 +311,27 @@ def load_app_diagnostics() -> pd.DataFrame:
 def load_topic_pool() -> pd.DataFrame:
     """Load topic-pool rows from the configured sandbox table."""
     table_name = _output_table("topic_pool")
+    mapping_table = _reference_table("category_mapping_table")
     query = f"""
         SELECT
-            cate_1_depth,
-            cate_2_depth,
-            sc_measurement,
-            topic_order,
-            topic,
-            description,
-            model_version,
-            prompt_version,
-            taxonomy_version,
-            created_at
-        FROM {table_name}
-        WHERE {_target_filter(model_version=_model_key())}
-        ORDER BY topic_order ASC
+            t.cate_1_depth,
+            COALESCE(m.cate_1_depth_kor, t.cate_1_depth) AS cate_1_depth_kor,
+            t.cate_2_depth,
+            COALESCE(m.cate_2_depth_kor, t.cate_2_depth) AS cate_2_depth_kor,
+            t.sc_measurement,
+            t.topic_order,
+            t.topic,
+            t.description,
+            t.model_version,
+            t.prompt_version,
+            t.taxonomy_version,
+            t.created_at
+        FROM {table_name} t
+        LEFT JOIN {mapping_table} m
+          ON t.cate_1_depth = m.cate_1_depth
+         AND t.cate_2_depth = m.cate_2_depth
+        WHERE {_target_filter("t", model_version=_model_key())}
+        ORDER BY t.topic_order ASC
         LIMIT 500
     """
     return _query_df(query)
@@ -323,23 +340,31 @@ def load_topic_pool() -> pd.DataFrame:
 def load_classification_summary() -> pd.DataFrame:
     """Load topic distribution summary from the configured classification table."""
     table_name = _classification_table_name()
+    mapping_table = _reference_table("category_mapping_table")
     query = f"""
         SELECT
-            cate_1_depth,
-            cate_2_depth,
-            sc_measurement,
-            pred_topic,
-            pred_topic_type,
+            c.cate_1_depth,
+            COALESCE(m.cate_1_depth_kor, c.cate_1_depth) AS cate_1_depth_kor,
+            c.cate_2_depth,
+            COALESCE(m.cate_2_depth_kor, c.cate_2_depth) AS cate_2_depth_kor,
+            c.sc_measurement,
+            c.pred_topic,
+            c.pred_topic_type,
             COUNT(*) AS row_cnt,
-            COUNT(DISTINCT memo_id) AS memo_id_cnt
-        FROM {table_name}
-        WHERE {_target_filter()}
+            COUNT(DISTINCT c.memo_id) AS memo_id_cnt
+        FROM {table_name} c
+        LEFT JOIN {mapping_table} m
+          ON c.cate_1_depth = m.cate_1_depth
+         AND c.cate_2_depth = m.cate_2_depth
+        WHERE {_target_filter("c")}
         GROUP BY
-            cate_1_depth,
-            cate_2_depth,
-            sc_measurement,
-            pred_topic,
-            pred_topic_type
+            c.cate_1_depth,
+            COALESCE(m.cate_1_depth_kor, c.cate_1_depth),
+            c.cate_2_depth,
+            COALESCE(m.cate_2_depth_kor, c.cate_2_depth),
+            c.sc_measurement,
+            c.pred_topic,
+            c.pred_topic_type
         ORDER BY row_cnt DESC
         LIMIT 500
     """
@@ -354,23 +379,26 @@ def load_classification_summary() -> pd.DataFrame:
 def load_others_review_candidates() -> pd.DataFrame:
     """Load distinct others rows for human review from the configured classification table."""
     table_name = _classification_table_name()
+    mapping_table = _reference_table("category_mapping_table")
     max_rows = int(_app_setting("max_review_rows", 300))
     query = f"""
         SELECT
-            cate_1_depth,
-            cate_2_depth,
-            sc_measurement,
-            memo_id,
-            memo_norm,
-            memo AS sample_memo,
-            pred_topic AS current_pred_topic,
-            pred_topic_type AS current_pred_topic_type,
-            match_reason,
-            model_version,
-            prompt_version,
-            taxonomy_version,
-            run_id,
-            run_date
+            c.cate_1_depth,
+            COALESCE(m.cate_1_depth_kor, c.cate_1_depth) AS cate_1_depth_kor,
+            c.cate_2_depth,
+            COALESCE(m.cate_2_depth_kor, c.cate_2_depth) AS cate_2_depth_kor,
+            c.sc_measurement,
+            c.memo_id,
+            c.memo_norm,
+            c.memo AS sample_memo,
+            c.pred_topic AS current_pred_topic,
+            c.pred_topic_type AS current_pred_topic_type,
+            c.match_reason,
+            c.model_version,
+            c.prompt_version,
+            c.taxonomy_version,
+            c.run_id,
+            c.run_date
         FROM (
             SELECT
                 *,
@@ -382,9 +410,12 @@ def load_others_review_candidates() -> pd.DataFrame:
             FROM {table_name}
             WHERE {_target_filter()}
               AND pred_topic_type = 'others'
-        )
-        WHERE rn = 1
-        ORDER BY memo_norm ASC
+        ) c
+        LEFT JOIN {mapping_table} m
+          ON c.cate_1_depth = m.cate_1_depth
+         AND c.cate_2_depth = m.cate_2_depth
+        WHERE c.rn = 1
+        ORDER BY c.memo_norm ASC
         LIMIT {max_rows}
     """
     return _query_df(query)

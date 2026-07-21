@@ -31,6 +31,7 @@ source:
 reference:
   category_rule_table: sandbox.z_jungryo_lee.tv_voc_category_rule_master
   category_master_table: sandbox.z_jungryo_lee.tv_voc_category_master
+  category_mapping_table: sandbox.z_jungryo_lee.intellytics_category_mapping
   taxonomy_definition_table: sandbox.z_jungryo_lee.tv_voc_taxonomy_definition
   prompt_registry_table: sandbox.z_jungryo_lee.tv_voc_prompt_registry
 
