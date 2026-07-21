@@ -7,5 +7,3 @@ env:
     value: "8000"
   - name: VOC_APP_MODEL_KEY
     value: gpt_55
-  - name: VOC_SETTINGS_PATH
-    value: /Workspace/Users/jungryo.lee@lge.com/prj_TV_voc/config/settings_intellytics.yaml
