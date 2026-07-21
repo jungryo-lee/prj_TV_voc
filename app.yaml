@@ -7,3 +7,5 @@ env:
     value: "8000"
   - name: VOC_APP_MODEL_KEY
     value: gpt_55
+  - name: DATABRICKS_HTTP_PATH
+    value: /sql/1.0/warehouses/f90295ec6229fd91

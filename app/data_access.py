@@ -13,6 +13,7 @@ from typing import Any, Iterator
 import pandas as pd
 import yaml
 from databricks import sql
+from databricks.sdk.core import Config, oauth_service_principal
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -133,25 +134,46 @@ def _access_token() -> str:
     return os.environ.get("DATABRICKS_TOKEN") or str(_app_setting("access_token", ""))
 
 
+def _oauth_credentials_provider(server_hostname: str):
+    """Build OAuth credentials provider from Databricks Apps service principal env."""
+    config = Config(
+        host=f"https://{server_hostname}",
+        client_id=os.environ.get("DATABRICKS_CLIENT_ID"),
+        client_secret=os.environ.get("DATABRICKS_CLIENT_SECRET"),
+    )
+    return oauth_service_principal(config)
+
+
 @contextmanager
 def _connect() -> Iterator[Any]:
     """Open a Databricks SQL connection."""
     server_hostname = _server_hostname()
     http_path = _http_path()
     access_token = _access_token()
+    client_id = os.environ.get("DATABRICKS_CLIENT_ID")
+    client_secret = os.environ.get("DATABRICKS_CLIENT_SECRET")
 
     if not server_hostname:
         raise RuntimeError("Databricks SQL hostname is missing. Set DATABRICKS_HOST.")
     if not http_path:
         raise RuntimeError("Databricks SQL warehouse HTTP path is missing. Set DATABRICKS_HTTP_PATH.")
-    if not access_token:
-        raise RuntimeError("Databricks token is missing. Set DATABRICKS_TOKEN or configure App auth.")
 
-    connection = sql.connect(
-        server_hostname=server_hostname,
-        http_path=http_path,
-        access_token=access_token,
-    )
+    if access_token:
+        connection = sql.connect(
+            server_hostname=server_hostname,
+            http_path=http_path,
+            access_token=access_token,
+        )
+    elif client_id and client_secret:
+        connection = sql.connect(
+            server_hostname=server_hostname,
+            http_path=http_path,
+            credentials_provider=lambda: _oauth_credentials_provider(server_hostname),
+        )
+    else:
+        raise RuntimeError(
+            "Databricks auth is missing. Set DATABRICKS_TOKEN or use Databricks Apps OAuth env."
+        )
     try:
         yield connection
     finally:
