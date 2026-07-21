@@ -35,10 +35,17 @@ def _output_table(key: str) -> str:
     return str(SETTINGS["tables"]["outputs"][key])
 
 
+def _is_blank_setting(value: Any) -> bool:
+    """Return whether an app setting should be treated as unset."""
+    if value is None:
+        return True
+    return str(value).strip().lower() in {"", "none", "null", "*"}
+
+
 def _app_setting(key: str, default: Any = None) -> Any:
     """Read an app setting with environment variable override support."""
     env_key = f"VOC_APP_{key.upper()}"
-    if env_key in os.environ:
+    if env_key in os.environ and not _is_blank_setting(os.environ[env_key]):
         return os.environ[env_key]
     return SETTINGS.get("app", {}).get(key, default)
 
@@ -56,7 +63,10 @@ def _model_version() -> str:
 
 def _classification_table_key() -> str:
     """Resolve which classification output the app should read."""
-    return str(_app_setting("classification_table_key", "classification_full"))
+    table_key = _app_setting("classification_table_key", "classification_full")
+    if _is_blank_setting(table_key):
+        return "classification_full"
+    return str(table_key)
 
 
 def _classification_table_name() -> str:
@@ -84,11 +94,11 @@ def _target_filter(alias: str = "", *, model_version: str | None = None) -> str:
     cate_2_depth = _app_setting("target_cate_2_depth")
     sc_measurement = _app_setting("target_sc_measurement")
 
-    if cate_1_depth:
+    if not _is_blank_setting(cate_1_depth):
         conditions.append(f"{prefix}cate_1_depth = '{_sql_escape(str(cate_1_depth))}'")
-    if cate_2_depth:
+    if not _is_blank_setting(cate_2_depth):
         conditions.append(f"{prefix}cate_2_depth = '{_sql_escape(str(cate_2_depth))}'")
-    if sc_measurement not in (None, ""):
+    if not _is_blank_setting(sc_measurement):
         conditions.append(f"{prefix}sc_measurement = {int(sc_measurement)}")
 
     return " AND ".join(conditions)
@@ -156,11 +166,113 @@ def _query_df(query: str) -> pd.DataFrame:
             return cursor.fetchall_arrow().to_pandas()
 
 
+def _count_query(table_name: str, where_clause: str | None = None) -> int | None:
+    """Return table count for diagnostics."""
+    query = f"SELECT COUNT(*) AS cnt FROM {table_name}"
+    if where_clause:
+        query = f"{query} WHERE {where_clause}"
+    df = _query_df(query)
+    if df.empty:
+        return None
+    return int(df.iloc[0]["cnt"])
+
+
 def _execute_sql(statement: str) -> None:
     """Execute one SQL statement."""
     with _connect() as connection:
         with connection.cursor() as cursor:
             cursor.execute(statement)
+
+
+def load_app_diagnostics() -> pd.DataFrame:
+    """Load app settings and row-count diagnostics for troubleshooting."""
+    classification_table = _classification_table_name()
+    topic_pool_table = _output_table("topic_pool")
+    review_decision_table = _output_table("review_decision")
+
+    rows = [
+        {
+            "check": "settings_path",
+            "target": str(SETTINGS_PATH),
+            "status": "ok" if SETTINGS_PATH.exists() else "missing",
+            "value": "",
+        },
+        {
+            "check": "classification_table_key",
+            "target": "app.classification_table_key",
+            "status": "ok",
+            "value": _classification_table_key(),
+        },
+        {
+            "check": "model_versions",
+            "target": "topic_pool / classification",
+            "status": "ok",
+            "value": f"topic_pool={_model_key()}, classification={_model_version()}",
+        },
+        {
+            "check": "target_filter",
+            "target": "classification",
+            "status": "ok",
+            "value": _target_filter(),
+        },
+        {
+            "check": "target_filter",
+            "target": "topic_pool",
+            "status": "ok",
+            "value": _target_filter(model_version=_model_key()),
+        },
+    ]
+
+    table_checks = [
+        (
+            "classification_total",
+            classification_table,
+            None,
+        ),
+        (
+            "classification_app_filtered",
+            classification_table,
+            _target_filter(),
+        ),
+        (
+            "topic_pool_total",
+            topic_pool_table,
+            None,
+        ),
+        (
+            "topic_pool_app_filtered",
+            topic_pool_table,
+            _target_filter(model_version=_model_key()),
+        ),
+        (
+            "review_decision_total",
+            review_decision_table,
+            None,
+        ),
+    ]
+
+    for check_name, table_name, where_clause in table_checks:
+        try:
+            count_value = _count_query(table_name, where_clause)
+            rows.append(
+                {
+                    "check": check_name,
+                    "target": table_name,
+                    "status": "ok",
+                    "value": str(count_value),
+                }
+            )
+        except Exception as exc:  # pragma: no cover - displayed in Databricks Apps
+            rows.append(
+                {
+                    "check": check_name,
+                    "target": table_name,
+                    "status": "error",
+                    "value": repr(exc),
+                }
+            )
+
+    return pd.DataFrame(rows)
 
 
 def load_topic_pool() -> pd.DataFrame:

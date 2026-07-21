@@ -10,6 +10,7 @@ import plotly.express as px
 from dash import Dash, Input, Output, State, dash_table, dcc, html
 
 from app.data_access import (
+    load_app_diagnostics,
     load_classification_summary,
     load_others_review_candidates,
     load_topic_pool,
@@ -94,6 +95,7 @@ dash_app.layout = dbc.Container(
                 dcc.Tab(label="분류 현황", value="summary"),
                 dcc.Tab(label="기타 리뷰 검토", value="others-review"),
                 dcc.Tab(label="Topic Pool", value="topic-pool"),
+                dcc.Tab(label="진단", value="diagnostics"),
             ],
         ),
         html.Div(id="tab-content", className="pt-3"),
@@ -105,11 +107,24 @@ dash_app.layout = dbc.Container(
 @dash_app.callback(Output("tab-content", "children"), Input("main-tabs", "value"))
 def render_tab(tab_value: str):
     """Render each app tab from current Databricks SQL tables."""
-    summary_df = load_classification_summary()
-    topic_pool_df = load_topic_pool()
-    others_df = load_others_review_candidates()
+    if tab_value == "diagnostics":
+        diagnostics_df = load_app_diagnostics()
+        return dash_table.DataTable(
+            data=diagnostics_df.to_dict("records"),
+            columns=[{"name": col, "id": col} for col in diagnostics_df.columns],
+            page_size=20,
+            style_table={"overflowX": "auto"},
+            style_cell={
+                "fontFamily": "sans-serif",
+                "fontSize": 13,
+                "textAlign": "left",
+                "whiteSpace": "normal",
+                "height": "auto",
+            },
+        )
 
     if tab_value == "summary":
+        summary_df = load_classification_summary()
         if summary_df.empty:
             return _empty_message(
                 "설정된 분류 결과 테이블에서 조회된 분류 현황이 없습니다. 배치 실행 결과와 App SQL 접속 설정을 확인하세요."
@@ -172,6 +187,7 @@ def render_tab(tab_value: str):
         )
 
     if tab_value == "topic-pool":
+        topic_pool_df = load_topic_pool()
         if topic_pool_df.empty:
             return _empty_message("topic_pool 테이블에서 조회된 주제 목록이 없습니다.")
 
@@ -185,6 +201,8 @@ def render_tab(tab_value: str):
             style_cell={"fontFamily": "sans-serif", "fontSize": 13, "textAlign": "left"},
         )
 
+    topic_pool_df = load_topic_pool()
+    others_df = load_others_review_candidates()
     topic_options = _topic_options(topic_pool_df)
     if others_df.empty:
         return _empty_message("설정된 분류 결과 테이블에서 조회된 기타 리뷰 후보가 없습니다.")
