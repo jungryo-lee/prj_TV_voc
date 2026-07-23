@@ -2,6 +2,8 @@ path:
   project_root: /Workspace/Users/jungryo.lee@lge.com/prj_TV_voc
   env: /Workspace/Users/jungryo.lee@lge.com/prj_TV_voc/.env
   prompts: /Workspace/Users/jungryo.lee@lge.com/prj_TV_voc/config/prompts.yaml
+  volume_base: /Volumes/sandbox/z_jungryo_lee/tv_voc
+  embedding_model: /Volumes/sandbox/z_jungryo_lee/tv_voc/bge-large-en-v1.5
 
 runtime:
   mode: test
@@ -45,6 +47,7 @@ tables:
     classification_summary: sandbox.z_jungryo_lee.tv_voc_classification_summary_intellytics
     review_decision: sandbox.z_jungryo_lee.tv_voc_review_decision_intellytics
     topic_pool_revision: sandbox.z_jungryo_lee.tv_voc_topic_pool_revision_intellytics
+    memo_embedding: sandbox.z_jungryo_lee.tv_voc_memo_embedding_intellytics
     driver_input: sandbox.z_jungryo_lee.tv_voc_driver_input_intellytics
     weighted_corr: sandbox.z_jungryo_lee.tv_voc_weighted_corr_intellytics
     weighted_regression: sandbox.z_jungryo_lee.tv_voc_weighted_regression_intellytics
@@ -190,6 +193,17 @@ classification:
   refinement_new_topic_candidate_min_distinct_memo_ids: 3
   refinement_new_topic_candidate_min_ratio: 0.02
   refinement_max_candidate_rows: 200
+
+memo_embedding:
+  enabled: true
+  input_table_key: classification_detail
+  output_table_key: memo_embedding
+  model_path: /Volumes/sandbox/z_jungryo_lee/tv_voc/bge-large-en-v1.5
+  batch_size: 64
+  label_min_confidence_score: 0.6
+  include_pred_topic_types: [topic, overall]
+  exclude_review_needed: true
+  text_col: memo_norm
 
 driver_analysis:
   enabled: false

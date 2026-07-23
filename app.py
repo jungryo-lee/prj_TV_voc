@@ -174,93 +174,96 @@ def _topic_options_by_group(topic_pool_df: pd.DataFrame) -> dict[str, list[dict[
     return topic_options
 
 
-def _topic_options_for_records(
-    records: list[dict],
-    topic_options_by_group: dict | None,
-) -> list[dict[str, str]]:
-    """Return approved-topic dropdown options for the currently visible rows."""
+def _review_table_columns() -> list[dict[str, str]]:
+    """Return columns for the left-side review candidate table."""
+    visible_columns = [
+        "sample_memo",
+        "cate_1_depth_kor",
+        "cate_2_depth_kor",
+        "sc_measurement",
+        "current_pred_topic",
+        "match_reason",
+    ]
+    return [{"name": col, "id": col} for col in visible_columns]
+
+
+def _detail_topic_options(row: dict | None, topic_options_by_group: dict | None) -> list[dict[str, str]]:
+    """Return topic dropdown options for one selected review row."""
+    if not row:
+        return []
     topic_options_by_group = topic_options_by_group or {}
-    merged_options: list[dict[str, str]] = [{"label": "기타 유지", "value": ""}]
-    seen_values = {""}
-
-    for row in records or []:
-        for option in topic_options_by_group.get(_group_key(row), []):
-            value = str(option.get("value") or "")
-            if value in seen_values:
-                continue
-            merged_options.append({"label": str(option.get("label") or value), "value": value})
-            seen_values.add(value)
-
-    return merged_options
+    options = topic_options_by_group.get(_group_key(row), [])
+    return [option for option in options if option.get("value")]
 
 
-def _table_dropdown(topic_options: list[dict[str, str]] | None = None) -> dict:
-    """Return DataTable dropdown config."""
-    return {
-        "approved_topic": {
-            "options": topic_options or [{"label": "기타 유지", "value": ""}]
-        },
-        "approved_action": {
-            "options": [
-                {"label": "기존 topic으로 재배치", "value": "reassign_existing_topic"},
-                {"label": "기타 유지", "value": "keep_others"},
-            ]
-        },
-    }
+def _selected_review_row(table_rows: list[dict] | None, selected_rows: list[int] | None) -> dict | None:
+    """Return the currently selected review row from the left table."""
+    if not table_rows:
+        return None
+    selected_index = selected_rows[0] if selected_rows else 0
+    if selected_index < 0 or selected_index >= len(table_rows):
+        selected_index = 0
+    return table_rows[selected_index]
 
 
-def _topic_tooltip_data(review_df: pd.DataFrame, topic_pool_df: pd.DataFrame) -> list[dict]:
-    """Return tooltip text with available topics for each review row."""
-    required_cols = {"cate_1_depth", "cate_2_depth", "sc_measurement", "topic"}
-    if topic_pool_df.empty or not required_cols.issubset(topic_pool_df.columns):
-        return [{} for _ in range(len(review_df))]
-
-    group_topics: dict[tuple[str, str, str], str] = {}
-    group_cols = ["cate_1_depth", "cate_2_depth", "sc_measurement"]
-    for group_values, group_df in topic_pool_df.groupby(group_cols, dropna=False):
-        topics = group_df["topic"].dropna().astype(str).drop_duplicates().sort_values()
-        topic_text = "\n".join(f"- {topic}" for topic in topics)
-        group_topics[tuple(str(value) for value in group_values)] = topic_text
-
-    tooltip_rows: list[dict] = []
-    for row in review_df.to_dict("records"):
-        group_key = (
-            str(row.get("cate_1_depth")),
-            str(row.get("cate_2_depth")),
-            str(row.get("sc_measurement")),
+def _review_detail_panel(row: dict | None) -> html.Div:
+    """Render the right-side manual review detail panel."""
+    if not row:
+        return html.Div(
+            dbc.Alert("검토할 리뷰를 왼쪽 테이블에서 선택하세요.", color="secondary"),
+            className="h-100",
         )
-        topic_text = group_topics.get(group_key, "선택 가능한 주제가 없습니다.")
-        tooltip_rows.append(
-            {
-                "approved_topic": {
-                    "value": f"이 그룹의 선택 가능 주제:\n{topic_text}",
-                    "type": "markdown",
-                }
-            }
-        )
-    return tooltip_rows
 
-
-def _topic_tooltip_from_options(records: list[dict], topic_options_by_group: dict | None) -> list[dict]:
-    """Return tooltip data from preloaded topic options."""
-    tooltip_rows: list[dict] = []
-    topic_options_by_group = topic_options_by_group or {}
-    for row in records or []:
-        options = topic_options_by_group.get(_group_key(row), [])
-        topic_text = "\n".join(
-            f"- {option.get('label')}"
-            for option in options
-            if option.get("value")
-        )
-        tooltip_rows.append(
-            {
-                "approved_topic": {
-                    "value": f"이 그룹의 선택 가능 주제:\n{topic_text or '선택 가능한 주제가 없습니다.'}",
-                    "type": "markdown",
-                }
-            }
-        )
-    return tooltip_rows
+    return html.Div(
+        [
+            html.Div(
+                [
+                    html.Div("선택 리뷰", className="text-muted small"),
+                    html.H5(str(row.get("sample_memo") or ""), className="mb-3"),
+                ]
+            ),
+            dbc.Row(
+                [
+                    dbc.Col(
+                        [
+                            html.Div("카테고리", className="text-muted small"),
+                            html.Div(str(row.get("cate_1_depth_kor") or "")),
+                            html.Div(str(row.get("cate_2_depth_kor") or ""), className="fw-semibold"),
+                        ],
+                        md=8,
+                    ),
+                    dbc.Col(
+                        [
+                            html.Div("감성", className="text-muted small"),
+                            html.Div(str(row.get("sc_measurement") or "")),
+                        ],
+                        md=4,
+                    ),
+                ],
+                className="mb-3",
+            ),
+            html.Div("현재 분류", className="text-muted small"),
+            html.Div(
+                [
+                    dbc.Badge(str(row.get("current_pred_topic_type") or ""), color="secondary", className="me-2"),
+                    html.Span(str(row.get("current_pred_topic") or "")),
+                ],
+                className="mb-3",
+            ),
+            html.Div("분류 사유", className="text-muted small"),
+            html.Div(
+                str(row.get("match_reason") or ""),
+                className="border rounded p-2 bg-light mb-3",
+                style={"whiteSpace": "pre-wrap", "maxHeight": "220px", "overflowY": "auto"},
+            ),
+            html.Div("저장 방식", className="text-muted small"),
+            html.P(
+                "주제를 선택하고 '기존 Topic으로 확정'을 누르면 reassign_existing_topic으로 저장됩니다. "
+                "'기타 유지'를 누르면 keep_others로 저장됩니다.",
+                className="small text-muted",
+            ),
+        ]
+    )
 
 
 dash_app.layout = dbc.Container(
@@ -455,38 +458,17 @@ def render_tab(tab_value: str):
 
     review_df = others_df.copy()
     review_df["approved_topic"] = ""
-    review_df["approved_action"] = "keep_others"
     review_df["review_comment"] = ""
     review_records = review_df.to_dict("records")
-
-    visible_columns = [
-        col
-        for col in [
-            "memo_id",
-            "sample_memo",
-            "cate_1_depth_kor",
-            "cate_2_depth_kor",
-            "sc_measurement",
-            "current_pred_topic",
-            "match_reason",
-            "approved_topic",
-            "approved_action",
-            "review_comment",
-        ]
-        if col in review_df.columns
-    ]
-    table_data_columns = [
-        col
-        for col in visible_columns + ["cate_1_depth", "cate_2_depth"]
-        if col in review_df.columns
-    ]
+    initial_review_row = review_records[0] if review_records else None
+    initial_topic_options = _detail_topic_options(initial_review_row, topic_options_by_group)
 
     return dbc.Container(
         [
             dcc.Store(id="topic-options-store", data=topic_options_by_group),
             dcc.Store(id="review-data-store", data=review_records),
             dbc.Alert(
-                "왼쪽 체크박스가 확정여부입니다. approved_topic을 바꾸든 그대로 두든, 확정할 row를 체크한 뒤 Save를 누르면 확정 라벨로 저장됩니다.",
+                "왼쪽에서 검토할 리뷰를 선택하고, 오른쪽 패널에서 주제를 선택하거나 기타 유지를 확정하세요.",
                 color="info",
             ),
             dbc.Row(
@@ -539,60 +521,88 @@ def render_tab(tab_value: str):
                         ],
                         md=2,
                     ),
-                    dbc.Col(
-                        dbc.Button(
-                            "Save",
-                            id="save-review-button",
-                            color="primary",
-                            className="mt-4 w-100",
-                        ),
-                        md=2,
-                    ),
                 ],
                 className="g-2 mb-3",
             ),
-            dash_table.DataTable(
-                id="manual-review-table",
-                data=review_df[table_data_columns].head(300).to_dict("records"),
-                columns=[
-                    {
-                        "name": col,
-                        "id": col,
-                        "editable": col in {"approved_topic", "approved_action", "review_comment"},
-                        "presentation": "dropdown" if col in {"approved_topic", "approved_action"} else "input",
-                    }
-                    for col in visible_columns
-                    + [
-                        col
-                        for col in ["cate_1_depth", "cate_2_depth"]
-                        if col in table_data_columns
-                    ]
+            dbc.Row(
+                [
+                    dbc.Col(
+                        dash_table.DataTable(
+                            id="manual-review-table",
+                            data=review_records[:300],
+                            columns=_review_table_columns(),
+                            row_selectable="single",
+                            selected_rows=[0] if review_records else [],
+                            page_size=12,
+                            sort_action="native",
+                            filter_action="native",
+                            style_table={"overflowX": "auto", "maxHeight": "720px", "overflowY": "auto"},
+                            style_cell={
+                                "fontFamily": "sans-serif",
+                                "fontSize": 13,
+                                "textAlign": "left",
+                                "whiteSpace": "normal",
+                                "height": "auto",
+                                "maxWidth": "360px",
+                            },
+                            style_data_conditional=[
+                                {
+                                    "if": {"state": "selected"},
+                                    "backgroundColor": "#e8f1ff",
+                                    "border": "1px solid #2f6fed",
+                                }
+                            ],
+                        ),
+                        md=7,
+                    ),
+                    dbc.Col(
+                        dbc.Card(
+                            dbc.CardBody(
+                                [
+                                    html.Div(
+                                        _review_detail_panel(initial_review_row),
+                                        id="review-detail-panel",
+                                    ),
+                                    html.Label("확정 Topic", className="small text-muted mt-2"),
+                                    dcc.Dropdown(
+                                        id="detail-approved-topic",
+                                        options=initial_topic_options,
+                                        value="",
+                                        placeholder="기존 Topic 중 하나를 선택",
+                                        clearable=True,
+                                    ),
+                                    html.Label("검토 코멘트", className="small text-muted mt-3"),
+                                    dcc.Textarea(
+                                        id="review-comment-input",
+                                        value="",
+                                        placeholder="선택 사항입니다.",
+                                        style={"width": "100%", "height": "90px"},
+                                    ),
+                                    dbc.ButtonGroup(
+                                        [
+                                            dbc.Button(
+                                                "기존 Topic으로 확정",
+                                                id="approve-topic-button",
+                                                color="primary",
+                                            ),
+                                            dbc.Button(
+                                                "기타 유지",
+                                                id="keep-others-button",
+                                                color="secondary",
+                                            ),
+                                        ],
+                                        className="mt-3 w-100",
+                                    ),
+                                    html.Div(id="save-review-status", className="mt-3"),
+                                ]
+                            ),
+                            className="h-100",
+                        ),
+                        md=5,
+                    ),
                 ],
-                hidden_columns=["cate_1_depth", "cate_2_depth"],
-                dropdown=_table_dropdown(
-                    _topic_options_for_records(
-                        review_df[table_data_columns].head(300).to_dict("records"),
-                        topic_options_by_group,
-                    )
-                ),
-                tooltip_data=_topic_tooltip_data(review_df[table_data_columns].head(300), topic_pool_df),
-                tooltip_duration=None,
-                editable=True,
-                row_selectable="multi",
-                selected_rows=[],
-                page_size=20,
-                sort_action="native",
-                filter_action="native",
-                style_table={"overflowX": "auto"},
-                style_cell={
-                    "fontFamily": "sans-serif",
-                    "fontSize": 13,
-                    "textAlign": "left",
-                    "whiteSpace": "normal",
-                    "height": "auto",
-                },
+                className="g-3",
             ),
-            html.Div(id="save-review-status", className="mt-3"),
         ],
         fluid=True,
     )
@@ -644,64 +654,24 @@ def update_summary_view(cate_1_depth_kor, cate_2_depth_kor, summary_records):
 
 
 @dash_app.callback(
-    Output("review-data-store", "data"),
     Output("manual-review-table", "data"),
     Output("manual-review-table", "selected_rows"),
-    Output("manual-review-table", "tooltip_data"),
-    Output("manual-review-table", "dropdown"),
-    Output("save-review-status", "children"),
     Input("review-filter-cate1", "value"),
     Input("review-filter-cate2", "value"),
     Input("review-filter-sc", "value"),
     Input("review-filter-topic", "value"),
-    Input("save-review-button", "n_clicks"),
     State("review-data-store", "data"),
-    State("manual-review-table", "data"),
-    State("manual-review-table", "selected_rows"),
-    State("topic-options-store", "data"),
     prevent_initial_call=True,
 )
-def sync_review_table(
+def filter_review_table(
     cate_1_depth_kor,
     cate_2_depth_kor,
     sc_measurement,
     topic,
-    _n_clicks,
     stored_rows,
-    table_rows,
-    selected_rows,
-    topic_options_by_group,
 ):
-    """Filter review rows and persist selected confirmed rows."""
+    """Filter review candidates in the left table."""
     stored_rows = stored_rows or []
-    status = ""
-    triggered = callback_context.triggered[0]["prop_id"].split(".")[0] if callback_context.triggered else ""
-
-    if triggered == "save-review-button":
-        selected_rows = selected_rows or []
-        selected_records = [
-            row for idx, row in enumerate(table_rows or []) if idx in selected_rows
-        ]
-        if not selected_records:
-            status = dbc.Alert("확정 체크된 row가 없습니다.", color="warning")
-        else:
-            selected_df = pd.DataFrame(selected_records)
-            selected_df["approved_action"] = selected_df.apply(
-                lambda row: "reassign_existing_topic"
-                if str(row.get("approved_topic") or "").strip()
-                else "keep_others",
-                axis=1,
-            )
-            saved_result = save_manual_review_decisions(selected_df)
-            saved_ids = {_row_identity(row) for row in selected_records}
-            stored_rows = [
-                row for row in stored_rows if _row_identity(row) not in saved_ids
-            ]
-            status = dbc.Alert(
-                f"확정 저장 완료: {len(selected_records)}건 | {saved_result}",
-                color="success",
-            )
-
     filtered_rows = _filter_review_records(
         stored_rows,
         cate_1_depth_kor=cate_1_depth_kor,
@@ -709,11 +679,103 @@ def sync_review_table(
         sc_measurement=sc_measurement,
         topic=topic,
     )[:300]
-    tooltip_data = _topic_tooltip_from_options(filtered_rows, topic_options_by_group)
-    dropdown = _table_dropdown(
-        _topic_options_for_records(filtered_rows, topic_options_by_group)
+    selected_rows = [0] if filtered_rows else []
+    return filtered_rows, selected_rows
+
+
+@dash_app.callback(
+    Output("review-detail-panel", "children"),
+    Output("detail-approved-topic", "options"),
+    Output("detail-approved-topic", "value"),
+    Output("review-comment-input", "value"),
+    Input("manual-review-table", "data"),
+    Input("manual-review-table", "selected_rows"),
+    State("topic-options-store", "data"),
+    prevent_initial_call=True,
+)
+def update_review_detail(table_rows, selected_rows, topic_options_by_group):
+    """Update the right-side detail panel for the selected review row."""
+    row = _selected_review_row(table_rows, selected_rows)
+    topic_options = _detail_topic_options(row, topic_options_by_group)
+    return _review_detail_panel(row), topic_options, "", ""
+
+
+@dash_app.callback(
+    Output("review-data-store", "data"),
+    Output("manual-review-table", "data", allow_duplicate=True),
+    Output("manual-review-table", "selected_rows", allow_duplicate=True),
+    Output("save-review-status", "children"),
+    Input("approve-topic-button", "n_clicks"),
+    Input("keep-others-button", "n_clicks"),
+    State("manual-review-table", "data"),
+    State("manual-review-table", "selected_rows"),
+    State("review-data-store", "data"),
+    State("detail-approved-topic", "value"),
+    State("review-comment-input", "value"),
+    State("review-filter-cate1", "value"),
+    State("review-filter-cate2", "value"),
+    State("review-filter-sc", "value"),
+    State("review-filter-topic", "value"),
+    prevent_initial_call=True,
+)
+def save_selected_review_decision(
+    _approve_clicks,
+    _keep_clicks,
+    table_rows,
+    selected_rows,
+    stored_rows,
+    approved_topic,
+    review_comment,
+    cate_1_depth_kor,
+    cate_2_depth_kor,
+    sc_measurement,
+    topic,
+):
+    """Save one selected review decision and remove it from the pending list."""
+    triggered = callback_context.triggered[0]["prop_id"].split(".")[0] if callback_context.triggered else ""
+    selected_row = _selected_review_row(table_rows, selected_rows)
+    stored_rows = stored_rows or []
+
+    if not selected_row:
+        return stored_rows, table_rows or [], [], dbc.Alert("선택된 리뷰가 없습니다.", color="warning")
+
+    row_to_save = dict(selected_row)
+    row_to_save["review_comment"] = review_comment or ""
+
+    if triggered == "approve-topic-button":
+        approved_topic = str(approved_topic or "").strip()
+        if not approved_topic:
+            return (
+                stored_rows,
+                table_rows or [],
+                selected_rows or [],
+                dbc.Alert("확정할 기존 Topic을 먼저 선택하세요.", color="warning"),
+            )
+        row_to_save["approved_topic"] = approved_topic
+    elif triggered == "keep-others-button":
+        row_to_save["approved_topic"] = ""
+    else:
+        return stored_rows, table_rows or [], selected_rows or [], ""
+
+    saved_result = save_manual_review_decisions(pd.DataFrame([row_to_save]))
+    saved_id = _row_identity(row_to_save)
+    remaining_rows = [
+        row for row in stored_rows if _row_identity(row) != saved_id
+    ]
+    filtered_rows = _filter_review_records(
+        remaining_rows,
+        cate_1_depth_kor=cate_1_depth_kor,
+        cate_2_depth_kor=cate_2_depth_kor,
+        sc_measurement=sc_measurement,
+        topic=topic,
+    )[:300]
+    next_selected_rows = [0] if filtered_rows else []
+    action_label = "기존 Topic 확정" if row_to_save.get("approved_topic") else "기타 유지"
+    status = dbc.Alert(
+        f"{action_label} 저장 완료 | {saved_result}",
+        color="success",
     )
-    return stored_rows, filtered_rows, [], tooltip_data, dropdown, status
+    return remaining_rows, filtered_rows, next_selected_rows, status
 
 
 if __name__ == "__main__":

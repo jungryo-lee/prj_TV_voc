@@ -251,15 +251,26 @@ Rule Router
 
 ## 8.1 Embedding Model For Retrieval And Similarity
 
-추천 1순위 예시:
+추천 1순위 baseline:
 
-* `BAAI/bge-m3`
+* `BAAI/bge-large-en-v1.5`
 
 선정 이유:
 
-* multilingual 대응
-* 짧은 리뷰와 혼합 언어 표현에 강점
-* retrieval, clustering, similarity 용도로 범용성이 높음
+* Intellytics 운영 데이터가 영어 리뷰 중심임
+* 영어 문장 retrieval, clustering, similarity 용도에 적합
+* 짧은 VOC memo의 topic 유사도 판단에 활용하기 좋음
+* bge 계열이라 기존 Databricks Volume 기반 운영 패턴을 재사용하기 쉬움
+
+운영 메모:
+
+* 기본 모델 경로: `/Volumes/sandbox/z_jungryo_lee/tv_voc/bge-large-en-v1.5`
+* 다국어 VOC 또는 긴 리뷰 대응이 필요해지면 `BAAI/bge-m3`와 A/B 테스트한다
+
+대안 예시:
+
+* `BAAI/bge-m3`: multilingual 대응, 긴 입력과 혼합 언어 표현에 강점
+* `intfloat/multilingual-e5-large`: 다국어 retrieval baseline 비교 후보
 
 활용 위치:
 
@@ -267,10 +278,6 @@ Rule Router
 * representative memo selection
 * topic mapping candidate retrieval
 * low-confidence classification support
-
-대안 예시:
-
-* `intfloat/multilingual-e5-large`
 
 ## 8.2 Supervised ML Baseline
 
@@ -322,7 +329,7 @@ Rule Router
 추천 예시:
 
 * `BERTopic`
-  * embedding model: `BAAI/bge-m3`
+  * embedding model: `BAAI/bge-large-en-v1.5`
   * dimensionality reduction: `UMAP`
   * clustering: `HDBSCAN`
   * topic representation: c-TF-IDF + LLM labeling

@@ -428,8 +428,11 @@ def load_classification_summary() -> pd.DataFrame:
             c.sc_measurement,
             c.pred_topic,
             c.pred_topic_type
-        ORDER BY row_cnt DESC
-        LIMIT 500
+        ORDER BY
+            cate_1_depth_kor ASC,
+            cate_2_depth_kor ASC,
+            c.sc_measurement DESC,
+            row_cnt DESC
     """
     df = _query_df(query)
     if df.empty or "row_cnt" not in df.columns:
