@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import os
-from numbers import Number
 
 import dash_bootstrap_components as dbc
 import pandas as pd
@@ -47,6 +46,53 @@ def _summary_chart(summary_df: pd.DataFrame):
         template="simple_white",
         labels={"pred_topic": "Topic", "row_cnt": "Rows", "pred_topic_type": "Type"},
     )
+
+
+def _topic_distribution_chart(
+    summary_df: pd.DataFrame,
+    *,
+    sc_measurement: int,
+    title: str,
+):
+    """Build a descending topic-distribution bar chart for one sentiment group."""
+    chart_df = summary_df.copy()
+    if chart_df.empty:
+        return px.bar(
+            pd.DataFrame({"pred_topic": [], "row_cnt": []}),
+            x="pred_topic",
+            y="row_cnt",
+            title=title,
+            template="simple_white",
+        )
+
+    chart_df = chart_df[chart_df["sc_measurement"].astype(str) == str(sc_measurement)]
+    chart_df = chart_df.sort_values("row_cnt", ascending=False).head(25)
+    fig = px.bar(
+        chart_df,
+        x="pred_topic",
+        y="row_cnt",
+        color="pred_topic_type",
+        title=title,
+        template="simple_white",
+        labels={"pred_topic": "Topic", "row_cnt": "Rows", "pred_topic_type": "Type"},
+    )
+    fig.update_layout(xaxis_tickangle=-35, margin={"l": 40, "r": 20, "t": 60, "b": 120})
+    return fig
+
+
+def _filter_summary_records(
+    records: list[dict],
+    *,
+    cate_1_depth_kor: str | None = None,
+    cate_2_depth_kor: str | None = None,
+) -> list[dict]:
+    """Apply summary-tab category filters."""
+    filtered = records or []
+    if cate_1_depth_kor:
+        filtered = [row for row in filtered if str(row.get("cate_1_depth_kor") or "") == str(cate_1_depth_kor)]
+    if cate_2_depth_kor:
+        filtered = [row for row in filtered if str(row.get("cate_2_depth_kor") or "") == str(cate_2_depth_kor)]
+    return filtered
 
 
 def _visible_columns(df: pd.DataFrame, *, hidden: set[str] | None = None) -> list[dict[str, str]]:
@@ -99,56 +145,6 @@ def _row_identity(row: dict) -> str:
     )
 
 
-def _filter_value(value) -> str:
-    """Return a Dash DataTable filter-query literal."""
-    if pd.isna(value):
-        return '""'
-    if isinstance(value, Number) and not isinstance(value, bool):
-        return str(int(value)) if float(value).is_integer() else str(value)
-    escaped = str(value).replace("\\", "\\\\").replace('"', '\\"')
-    return f'"{escaped}"'
-
-
-def _group_filter_query(cate_1_depth, cate_2_depth, sc_measurement) -> str:
-    """Build a row-level group filter for DataTable dropdowns."""
-    return (
-        f"{{cate_1_depth}} = {_filter_value(cate_1_depth)} && "
-        f"{{cate_2_depth}} = {_filter_value(cate_2_depth)} && "
-        f"{{sc_measurement}} = {_filter_value(sc_measurement)}"
-    )
-
-
-def _topic_dropdown_conditional(topic_pool_df: pd.DataFrame) -> list[dict]:
-    """Return row-group-specific topic dropdown options."""
-    required_cols = {"cate_1_depth", "cate_2_depth", "sc_measurement", "topic"}
-    if topic_pool_df.empty or not required_cols.issubset(topic_pool_df.columns):
-        return []
-
-    dropdown_rules: list[dict] = []
-    group_cols = ["cate_1_depth", "cate_2_depth", "sc_measurement"]
-    for group_values, group_df in topic_pool_df.groupby(group_cols, dropna=False):
-        cate_1_depth, cate_2_depth, sc_measurement = group_values
-        options = [{"label": "기타 유지", "value": ""}]
-        for topic in group_df["topic"].dropna().astype(str).drop_duplicates().sort_values():
-            options.append({"label": topic, "value": topic})
-
-        dropdown_rules.append(
-            {
-                "if": {
-                    "column_id": "approved_topic",
-                    "filter_query": _group_filter_query(
-                        cate_1_depth,
-                        cate_2_depth,
-                        sc_measurement,
-                    ),
-                },
-                "options": options,
-            }
-        )
-
-    return dropdown_rules
-
-
 def _group_key(row: dict) -> str:
     """Return stable group key for topic-option lookup."""
     return "||".join(
@@ -176,6 +172,41 @@ def _topic_options_by_group(topic_pool_df: pd.DataFrame) -> dict[str, list[dict[
         topic_options[group_key] = options
 
     return topic_options
+
+
+def _topic_options_for_records(
+    records: list[dict],
+    topic_options_by_group: dict | None,
+) -> list[dict[str, str]]:
+    """Return approved-topic dropdown options for the currently visible rows."""
+    topic_options_by_group = topic_options_by_group or {}
+    merged_options: list[dict[str, str]] = [{"label": "기타 유지", "value": ""}]
+    seen_values = {""}
+
+    for row in records or []:
+        for option in topic_options_by_group.get(_group_key(row), []):
+            value = str(option.get("value") or "")
+            if value in seen_values:
+                continue
+            merged_options.append({"label": str(option.get("label") or value), "value": value})
+            seen_values.add(value)
+
+    return merged_options
+
+
+def _table_dropdown(topic_options: list[dict[str, str]] | None = None) -> dict:
+    """Return DataTable dropdown config."""
+    return {
+        "approved_topic": {
+            "options": topic_options or [{"label": "기타 유지", "value": ""}]
+        },
+        "approved_action": {
+            "options": [
+                {"label": "기존 topic으로 재배치", "value": "reassign_existing_topic"},
+                {"label": "기타 유지", "value": "keep_others"},
+            ]
+        },
+    }
 
 
 def _topic_tooltip_data(review_df: pd.DataFrame, topic_pool_df: pd.DataFrame) -> list[dict]:
@@ -304,8 +335,39 @@ def render_tab(tab_value: str):
                 "설정된 분류 결과 테이블에서 조회된 분류 현황이 없습니다. 배치 실행 결과와 App SQL 접속 설정을 확인하세요."
             )
 
+        summary_records = summary_df.to_dict("records")
         return dbc.Container(
             [
+                dcc.Store(id="summary-data-store", data=summary_records),
+                dbc.Row(
+                    [
+                        dbc.Col(
+                            [
+                                html.Label("cate_1_depth_kor", className="small text-muted"),
+                                dcc.Dropdown(
+                                    id="summary-filter-cate1",
+                                    options=_dropdown_options(summary_df.get("cate_1_depth_kor", [])),
+                                    value="",
+                                    clearable=False,
+                                ),
+                            ],
+                            md=6,
+                        ),
+                        dbc.Col(
+                            [
+                                html.Label("cate_2_depth_kor", className="small text-muted"),
+                                dcc.Dropdown(
+                                    id="summary-filter-cate2",
+                                    options=_dropdown_options(summary_df.get("cate_2_depth_kor", [])),
+                                    value="",
+                                    clearable=False,
+                                ),
+                            ],
+                            md=6,
+                        ),
+                    ],
+                    className="g-2 mb-3",
+                ),
                 dbc.Row(
                     [
                         dbc.Col(
@@ -346,8 +408,18 @@ def render_tab(tab_value: str):
                     ],
                     className="g-3",
                 ),
-                dcc.Graph(figure=_summary_chart(summary_df), className="mt-3"),
+                dcc.Graph(
+                    id="summary-positive-chart",
+                    figure=_topic_distribution_chart(summary_df, sc_measurement=1, title="긍정 주제분류 분포"),
+                    className="mt-3",
+                ),
+                dcc.Graph(
+                    id="summary-negative-chart",
+                    figure=_topic_distribution_chart(summary_df, sc_measurement=-1, title="부정 주제분류 분포"),
+                    className="mt-3",
+                ),
                 dash_table.DataTable(
+                    id="summary-detail-table",
                     data=summary_df.head(200).to_dict("records"),
                     columns=_visible_columns(summary_df, hidden={"cate_1_depth", "cate_2_depth"}),
                     page_size=20,
@@ -377,7 +449,6 @@ def render_tab(tab_value: str):
 
     topic_pool_df = load_topic_pool()
     others_df = load_others_review_candidates()
-    topic_dropdown_conditional = _topic_dropdown_conditional(topic_pool_df)
     topic_options_by_group = _topic_options_by_group(topic_pool_df)
     if others_df.empty:
         return _empty_message("설정된 분류 결과 테이블에서 조회된 기타 리뷰 후보가 없습니다.")
@@ -498,16 +569,12 @@ def render_tab(tab_value: str):
                     ]
                 ],
                 hidden_columns=["cate_1_depth", "cate_2_depth"],
-                dropdown={
-                    "approved_topic": {"options": [{"label": "기타 유지", "value": ""}]},
-                    "approved_action": {
-                        "options": [
-                            {"label": "기존 topic으로 재배치", "value": "reassign_existing_topic"},
-                            {"label": "기타 유지", "value": "keep_others"},
-                        ]
-                    },
-                },
-                dropdown_conditional=topic_dropdown_conditional,
+                dropdown=_table_dropdown(
+                    _topic_options_for_records(
+                        review_df[table_data_columns].head(300).to_dict("records"),
+                        topic_options_by_group,
+                    )
+                ),
                 tooltip_data=_topic_tooltip_data(review_df[table_data_columns].head(300), topic_pool_df),
                 tooltip_duration=None,
                 editable=True,
@@ -532,10 +599,56 @@ def render_tab(tab_value: str):
 
 
 @dash_app.callback(
+    Output("summary-filter-cate2", "options"),
+    Output("summary-filter-cate2", "value"),
+    Output("summary-positive-chart", "figure"),
+    Output("summary-negative-chart", "figure"),
+    Output("summary-detail-table", "data"),
+    Input("summary-filter-cate1", "value"),
+    Input("summary-filter-cate2", "value"),
+    State("summary-data-store", "data"),
+    prevent_initial_call=True,
+)
+def update_summary_view(cate_1_depth_kor, cate_2_depth_kor, summary_records):
+    """Update summary filters and positive/negative charts."""
+    summary_records = summary_records or []
+    cate1_rows = _filter_summary_records(
+        summary_records,
+        cate_1_depth_kor=cate_1_depth_kor,
+    )
+    cate2_options = _dropdown_options(
+        [row.get("cate_2_depth_kor") for row in cate1_rows]
+    )
+    allowed_cate2_values = {option["value"] for option in cate2_options}
+    resolved_cate2 = cate_2_depth_kor if cate_2_depth_kor in allowed_cate2_values else ""
+
+    filtered_rows = _filter_summary_records(
+        summary_records,
+        cate_1_depth_kor=cate_1_depth_kor,
+        cate_2_depth_kor=resolved_cate2,
+    )
+    filtered_df = pd.DataFrame(filtered_rows)
+
+    positive_fig = _topic_distribution_chart(
+        filtered_df,
+        sc_measurement=1,
+        title="긍정 주제분류 분포",
+    )
+    negative_fig = _topic_distribution_chart(
+        filtered_df,
+        sc_measurement=-1,
+        title="부정 주제분류 분포",
+    )
+    table_rows = filtered_df.sort_values("row_cnt", ascending=False).head(200).to_dict("records") if not filtered_df.empty else []
+    return cate2_options, resolved_cate2, positive_fig, negative_fig, table_rows
+
+
+@dash_app.callback(
     Output("review-data-store", "data"),
     Output("manual-review-table", "data"),
     Output("manual-review-table", "selected_rows"),
     Output("manual-review-table", "tooltip_data"),
+    Output("manual-review-table", "dropdown"),
     Output("save-review-status", "children"),
     Input("review-filter-cate1", "value"),
     Input("review-filter-cate2", "value"),
@@ -597,47 +710,10 @@ def sync_review_table(
         topic=topic,
     )[:300]
     tooltip_data = _topic_tooltip_from_options(filtered_rows, topic_options_by_group)
-    return stored_rows, filtered_rows, [], tooltip_data, status
-
-
-@dash_app.callback(
-    Output("manual-review-table", "dropdown"),
-    Input("manual-review-table", "active_cell"),
-    State("manual-review-table", "data"),
-    State("topic-options-store", "data"),
-    prevent_initial_call=True,
-)
-def update_approved_topic_dropdown(
-    active_cell: dict | None,
-    table_rows: list[dict] | None,
-    topic_options_by_group: dict | None,
-):
-    """Show only topics for the active row's category group."""
-    default_dropdown = {
-        "approved_topic": {"options": [{"label": "기타 유지", "value": ""}]},
-        "approved_action": {
-            "options": [
-                {"label": "기존 topic으로 재배치", "value": "reassign_existing_topic"},
-                {"label": "기타 유지", "value": "keep_others"},
-            ]
-        },
-    }
-
-    if not active_cell or active_cell.get("column_id") != "approved_topic":
-        return default_dropdown
-    if not table_rows or not topic_options_by_group:
-        return default_dropdown
-
-    row_index = active_cell.get("row")
-    if row_index is None or row_index >= len(table_rows):
-        return default_dropdown
-
-    group_options = topic_options_by_group.get(
-        _group_key(table_rows[row_index]),
-        default_dropdown["approved_topic"]["options"],
+    dropdown = _table_dropdown(
+        _topic_options_for_records(filtered_rows, topic_options_by_group)
     )
-    default_dropdown["approved_topic"] = {"options": group_options}
-    return default_dropdown
+    return stored_rows, filtered_rows, [], tooltip_data, dropdown, status
 
 
 if __name__ == "__main__":
