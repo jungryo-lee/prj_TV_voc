@@ -59,7 +59,12 @@ def _embedding_cfg(config: dict[str, Any]) -> dict[str, Any]:
             or DEFAULT_EMBEDDING_MODEL_PATH
         ),
         "batch_size": int(cfg.get("batch_size", 64)),
-        "label_min_confidence_score": float(cfg.get("label_min_confidence_score", 0.6)),
+        "label_min_confidence_score": float(
+            cfg.get(
+                "heuristic_label_min_confidence_score",
+                cfg.get("label_min_confidence_score", 0.6),
+            )
+        ),
         "include_pred_topic_types": list(
             cfg.get("include_pred_topic_types", ["topic", "overall"])
         ),
@@ -85,6 +90,38 @@ def _table_exists(spark: SparkSession, table_name: str) -> bool:
         return True
     except Exception:
         return False
+
+
+def _trusted_label_condition(min_confidence_score: float) -> F.Column:
+    """Return stage-aware condition for embedding label inclusion.
+
+    LLM fallback rows currently have NULL confidence_score because the LLM does
+    not return a calibrated probability. Those rows can still be useful as
+    supervised labels when they are not marked for review and are not `others`.
+    Heuristic matches, on the other hand, use a numeric matching score, so the
+    threshold is applied only to score-bearing stages.
+    """
+    stage_col = F.coalesce(F.col("classification_stage"), F.lit(""))
+    confidence_col = F.coalesce(F.col("confidence_score"), F.lit(0.0))
+
+    include_without_score = stage_col.isin(
+        "llm_fallback",
+        "llm_reason_recovered",
+        "rule_overall",
+        "rule_overall_target_sentiment",
+    )
+    include_with_score = (
+        stage_col.isin(
+            "heuristic_topic_match",
+            "ambiguous_candidate_match",
+            "forced_others",
+            "rule_non_overall",
+            "rule_overall_blocked",
+        )
+        & (confidence_col >= float(min_confidence_score))
+    )
+
+    return include_without_score | include_with_score
 
 
 def load_labeled_memo_df(
@@ -135,8 +172,9 @@ def load_labeled_memo_df(
         .where(F.col("model_version") == resolved_model_version)
         .where(F.col("memo_id").isNotNull())
         .where(F.col("pred_topic").isNotNull())
+        .where(F.col("pred_topic") != "기타")
         .where(F.col("pred_topic_type").isin(resolved_topic_types))
-        .where(F.coalesce(F.col("confidence_score"), F.lit(0.0)) >= resolved_min_confidence)
+        .where(_trusted_label_condition(resolved_min_confidence))
     )
 
     if "is_latest" in base_df.columns:

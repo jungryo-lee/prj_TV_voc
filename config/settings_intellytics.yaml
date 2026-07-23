@@ -201,7 +201,7 @@ memo_embedding:
   output_table_key: memo_embedding
   model_path: /Volumes/sandbox/z_jungryo_lee/tv_voc/bge-large-en-v1.5
   batch_size: 64
-  label_min_confidence_score: 0.6
+  heuristic_label_min_confidence_score: 0.6
   include_pred_topic_types: [topic, overall]
   exclude_review_needed: true
   text_col: memo_norm
