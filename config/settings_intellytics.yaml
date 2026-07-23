@@ -48,6 +48,7 @@ tables:
     review_decision: sandbox.z_jungryo_lee.tv_voc_review_decision_intellytics
     topic_pool_revision: sandbox.z_jungryo_lee.tv_voc_topic_pool_revision_intellytics
     memo_embedding: sandbox.z_jungryo_lee.tv_voc_memo_embedding_intellytics
+    topic_prototype: sandbox.z_jungryo_lee.tv_voc_topic_prototype_intellytics
     driver_input: sandbox.z_jungryo_lee.tv_voc_driver_input_intellytics
     weighted_corr: sandbox.z_jungryo_lee.tv_voc_weighted_corr_intellytics
     weighted_regression: sandbox.z_jungryo_lee.tv_voc_weighted_regression_intellytics
@@ -204,6 +205,16 @@ memo_embedding:
   include_pred_topic_types: [topic, overall]
   exclude_review_needed: true
   text_col: memo_norm
+
+topic_prototype:
+  enabled: true
+  input_table_key: memo_embedding
+  output_table_key: topic_prototype
+  embedding_model: databricks-bge-large-en
+  min_topic_memo_count: 3
+  auto_accept_threshold: 0.82
+  llm_fallback_threshold: 0.70
+  top_k: 3
 
 driver_analysis:
   enabled: false
