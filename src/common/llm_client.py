@@ -7,8 +7,6 @@ import re
 import time
 from typing import Any
 
-from mlflow.deployments import get_deploy_client
-
 from common.config_loader import load_config
 
 
@@ -105,6 +103,14 @@ class DatabricksLLMClient:
         self.endpoint = model_cfg["endpoint"]
         self.model_version = model_cfg.get("model_version", selected_model_key)
         self.inference_config = model_cfg.get("inference", {})
+
+        try:
+            from mlflow.deployments import get_deploy_client
+        except ImportError as exc:  # pragma: no cover - runtime dependency check
+            raise ImportError(
+                "mlflow is required for Databricks LLM calls. "
+                "Install mlflow or run this client in Databricks Runtime."
+            ) from exc
 
         self.client = get_deploy_client("databricks")
 

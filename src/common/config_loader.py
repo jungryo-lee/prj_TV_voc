@@ -142,3 +142,30 @@ def get_source_table(config: dict[str, Any], table_key: str) -> str:
     if not table_name:
         raise KeyError(f"Unknown source table key: {table_key}")
     return table_name
+
+
+def get_source_filters(config: dict[str, Any], table_key: str) -> list[str]:
+    """Return configured SQL filter snippets for a source table."""
+    sources = config.get("source", {})
+    filters_cfg = sources.get("filters", {}) or {}
+    filters = filters_cfg.get(table_key, [])
+
+    if isinstance(filters, str):
+        filters = [filters]
+
+    return [str(item).strip() for item in filters if str(item).strip()]
+
+
+def build_source_filter_sql(
+    config: dict[str, Any],
+    table_key: str,
+    *,
+    prefix: str = "and",
+) -> str:
+    """Return source filter SQL snippets joined with the requested prefix."""
+    filters = get_source_filters(config, table_key)
+    if not filters:
+        return ""
+
+    normalized_prefix = prefix.strip()
+    return "\n".join(f"{normalized_prefix} ({item})" for item in filters)

@@ -54,6 +54,8 @@ def _now_text() -> str:
 def _checkpoint_key(
     *,
     model_key: str,
+    prompt_version: str,
+    taxonomy_version: str,
     cate_1_depth: str | None,
     cate_2_depth: str | None,
     sc_measurement: int | None,
@@ -64,6 +66,8 @@ def _checkpoint_key(
         [
             PIPELINE_NAME,
             model_key,
+            prompt_version,
+            taxonomy_version,
             cate_1_depth or "*",
             cate_2_depth or "*",
             str(sc_measurement) if sc_measurement is not None else "*",
@@ -464,6 +468,36 @@ def _load_completed_signatures(
     }
 
 
+def _load_failed_retry_counts(
+    spark: SparkSession,
+    config: dict[str, Any],
+    *,
+    checkpoint_key: str,
+) -> dict[str, int]:
+    """Load failed-attempt counts by group for the checkpoint key."""
+    table_name = get_log_table(config, "pipeline_progress")
+    if not spark.catalog.tableExists(table_name):
+        return {}
+
+    rows = (
+        spark.table(table_name)
+        .where(F.col("checkpoint_key") == checkpoint_key)
+        .where(F.col("pipeline_name") == PIPELINE_NAME)
+        .where(F.col("status") == "failed")
+        .groupBy("cate_1_depth", "cate_2_depth", "sc_measurement")
+        .agg(F.count("*").alias("failed_retry_count"))
+        .collect()
+    )
+    return {
+        _group_signature(
+            row["cate_1_depth"],
+            row["cate_2_depth"],
+            int(row["sc_measurement"]),
+        ): int(row["failed_retry_count"])
+        for row in rows
+    }
+
+
 def _clear_checkpoint_rows(
     spark: SparkSession,
     config: dict[str, Any],
@@ -525,8 +559,14 @@ def run_taxonomy_classification_batch(
     """
     effective_config = config or load_config(config_path)
     run_id = str(effective_config.get("runtime", {}).get("resolved_run_id", ""))
+    prompt_version = _version_value(effective_config, "prompt_version")
+    taxonomy_version = _version_value(effective_config, "taxonomy_version")
+    pipeline_cfg = effective_config.get("pipeline", {}) or {}
+    max_failed_group_retries = int(pipeline_cfg.get("max_failed_group_retries", 2))
     checkpoint_key = _checkpoint_key(
         model_key=model_key,
+        prompt_version=prompt_version,
+        taxonomy_version=taxonomy_version,
         cate_1_depth=cate_1_depth,
         cate_2_depth=cate_2_depth,
         sc_measurement=sc_measurement,
@@ -551,11 +591,23 @@ def run_taxonomy_classification_batch(
         if resume_from_checkpoint
         else set()
     )
+    failed_retry_counts = (
+        _load_failed_retry_counts(
+            spark,
+            effective_config,
+            checkpoint_key=checkpoint_key,
+        )
+        if resume_from_checkpoint and max_failed_group_retries >= 0
+        else {}
+    )
 
     if print_progress:
         print(
             f"[{PIPELINE_NAME}] start | groups={len(target_groups)} | "
-            f"checkpoint_key={checkpoint_key} | completed_checkpoint_groups={len(completed_signatures)}"
+            f"checkpoint_key={checkpoint_key} | "
+            f"completed_checkpoint_groups={len(completed_signatures)} | "
+            f"failed_retry_groups={len(failed_retry_counts)} | "
+            f"max_failed_group_retries={max_failed_group_retries}"
         )
 
     classification_summaries: list[dict[str, Any]] = []
@@ -603,10 +655,50 @@ def run_taxonomy_classification_batch(
                 )
             continue
 
+        failed_retry_count = int(failed_retry_counts.get(signature, 0))
+        if max_failed_group_retries >= 0 and failed_retry_count >= max_failed_group_retries:
+            skipped_group_count += 1
+            failed_group_count += 1
+            message = (
+                "group quarantined after repeated failures; "
+                f"failed_retry_count={failed_retry_count}; "
+                f"max_failed_group_retries={max_failed_group_retries}"
+            )
+            failed_groups.append(
+                {
+                    "cate_1_depth": group_cate_1,
+                    "cate_2_depth": group_cate_2,
+                    "sc_measurement": group_sc,
+                    "error_message": message,
+                    "quarantined_yn": True,
+                }
+            )
+            _append_progress_row(
+                spark,
+                effective_config,
+                checkpoint_key=checkpoint_key,
+                run_id=run_id,
+                model_key=model_key,
+                cate_1_depth=group_cate_1,
+                cate_2_depth=group_cate_2,
+                sc_measurement=group_sc,
+                status="skipped",
+                step="group_quarantined",
+                message=message,
+            )
+            if print_progress:
+                print(
+                    f"[{PIPELINE_NAME}] quarantine {index}/{len(target_groups)} | "
+                    f"{group_cate_1} / {group_cate_2} / {group_sc} | "
+                    f"failed_retry_count={failed_retry_count}"
+                )
+            continue
+
         if print_progress:
             print(
                 f"[{PIPELINE_NAME}] run {index}/{len(target_groups)} | "
-                f"{group_cate_1} / {group_cate_2} / {group_sc}"
+                f"{group_cate_1} / {group_cate_2} / {group_sc} | "
+                f"failed_retry_count={failed_retry_count}"
             )
 
         _append_progress_row(
@@ -809,12 +901,15 @@ def run_taxonomy_classification_batch(
             _clear_runtime_memory(spark)
             if continue_on_group_failure:
                 failed_group_count += 1
+                failed_retry_counts[signature] = failed_retry_count + 1
                 failed_groups.append(
                     {
                         "cate_1_depth": group_cate_1,
                         "cate_2_depth": group_cate_2,
                         "sc_measurement": group_sc,
                         "error_message": error_message,
+                        "failed_retry_count": failed_retry_count + 1,
+                        "quarantined_yn": False,
                     }
                 )
                 if print_progress:

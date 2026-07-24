@@ -11,7 +11,7 @@ from pyspark.sql import DataFrame, SparkSession, types as T
 from pyspark.sql import functions as F
 from pyspark.sql.window import Window
 
-from common.config_loader import get_source_table, load_config
+from common.config_loader import build_source_filter_sql, get_source_table, load_config
 from common.llm_client import get_llm_client
 from common.memo_id import with_memo_id
 from taxonomy.prompt_builder import overall_topic_name
@@ -757,6 +757,7 @@ def build_classification_target_query(
 ) -> str:
     """Build the SQL used to load one classification target group."""
     source_table = get_source_table(config, "raw_review_table")
+    source_filter_sql = build_source_filter_sql(config, "raw_review_table")
     cate_1 = _sql_escape(cate_1_depth)
     cate_2 = _sql_escape(cate_2_depth)
 
@@ -776,6 +777,7 @@ where cate_1_depth = '{cate_1}'
   and sc_measurement = {int(sc_measurement)}
   and memo is not null
   and length(trim(memo)) > 0
+  {source_filter_sql}
 """.strip()
 
 

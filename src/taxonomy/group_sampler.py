@@ -7,7 +7,7 @@ from typing import Any
 from pyspark.sql import DataFrame, SparkSession, Window
 from pyspark.sql import functions as F
 
-from common.config_loader import get_source_table
+from common.config_loader import build_source_filter_sql, get_source_table
 from common.memo_id import with_memo_id
 
 
@@ -38,6 +38,7 @@ def build_group_query(config: dict[str, Any]) -> str:
     """Build the SQL used to load raw rows for eligible rule-profile groups."""
     source_table = get_source_table(config, "raw_review_table")
     stage_cfg = get_rule_profile_stage_config(config)
+    source_filter_sql = build_source_filter_sql(config, "raw_review_table")
 
     exclude_prefix = _sql_escape(stage_cfg["exclude_category_prefix"])
     sentiments = ", ".join(str(int(v)) for v in stage_cfg["target_sentiments"])
@@ -53,6 +54,7 @@ where cate_1_depth not like '{exclude_prefix}%'
   and sc_measurement in ({sentiments})
   and memo is not null
   and length(trim(memo)) > 0
+  {source_filter_sql}
 """.strip()
 
 
@@ -104,6 +106,7 @@ def build_group_sample_query(
 ) -> str:
     """Build SQL used to load raw rows for one category/sentiment group."""
     source_table = get_source_table(config, "raw_review_table")
+    source_filter_sql = build_source_filter_sql(config, "raw_review_table")
     cate_1 = _sql_escape(cate_1_depth)
     cate_2 = _sql_escape(cate_2_depth)
 
@@ -123,6 +126,7 @@ where cate_1_depth = '{cate_1}'
   and sc_measurement = {int(sc_measurement)}
   and memo is not null
   and length(trim(memo)) > 0
+  {source_filter_sql}
 """.strip()
 
 

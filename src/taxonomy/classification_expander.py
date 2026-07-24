@@ -10,7 +10,7 @@ from pyspark.sql import functions as F
 from pyspark.sql import types as T
 from pyspark.sql.window import Window
 
-from common.config_loader import get_output_table, get_source_table
+from common.config_loader import get_output_table, get_source_filters, get_source_table
 from common.memo_id import with_memo_id
 
 
@@ -84,6 +84,7 @@ def build_raw_review_query(
         "memo is not null",
         "length(trim(memo)) > 0",
     ]
+    filters.extend(f"({item})" for item in get_source_filters(config, "raw_review_table"))
 
     if cate_1_depth is not None:
         filters.append(f"cate_1_depth = '{_sql_escape(cate_1_depth)}'")

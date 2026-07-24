@@ -238,5 +238,6 @@ pipeline:
   overwrite_output: false
   save_failed_rows: true
   save_progress: true
+  max_failed_group_retries: 2
   require_human_review_for_new_category: true
   latest_flag_strategy: true

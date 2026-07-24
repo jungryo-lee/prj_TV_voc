@@ -29,6 +29,9 @@ source:
   raw_review_table: sandbox.z_jungryo_lee.intellytics_display_online_voc
   model_meta_table: sandbox.z_jungryo_lee.buzz_model_meta
   sentiment_source_table: sandbox.z_jungryo_lee.buzz_sc_score_dataset
+  filters:
+    raw_review_table:
+      - is_lifestyle = 'N'
 
 reference:
   category_rule_table: sandbox.z_jungryo_lee.tv_voc_category_rule_master
@@ -83,10 +86,10 @@ llm:
         max_tokens: 2200
 
 version:
-  prompt_version: v1_intellytics
-  taxonomy_version: v1_intellytics
+  prompt_version: v1_intellytics_non_lifestyle
+  taxonomy_version: v1_intellytics_non_lifestyle
   model_version: claude-sonnet-4
-  pipeline_version: v1_intellytics
+  pipeline_version: v1_intellytics_non_lifestyle
 
 metadata_columns:
   run_id: run_id
@@ -240,5 +243,6 @@ pipeline:
   overwrite_output: false
   save_failed_rows: true
   save_progress: true
+  max_failed_group_retries: 2
   require_human_review_for_new_category: true
   latest_flag_strategy: true
