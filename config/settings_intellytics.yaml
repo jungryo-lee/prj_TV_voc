@@ -51,7 +51,10 @@ tables:
     review_decision: sandbox.z_jungryo_lee.tv_voc_review_decision_intellytics
     topic_pool_revision: sandbox.z_jungryo_lee.tv_voc_topic_pool_revision_intellytics
     memo_embedding: sandbox.z_jungryo_lee.tv_voc_memo_embedding_intellytics
+    memo_embedding_unclassified: sandbox.z_jungryo_lee.tv_voc_memo_embedding_unclassified_intellytics
     topic_prototype: sandbox.z_jungryo_lee.tv_voc_topic_prototype_intellytics
+    ml_classification_detail: sandbox.z_jungryo_lee.tv_voc_ml_classification_detail_intellytics
+    llm_fallback_queue: sandbox.z_jungryo_lee.tv_voc_llm_fallback_queue_intellytics
     driver_input: sandbox.z_jungryo_lee.tv_voc_driver_input_intellytics
     weighted_corr: sandbox.z_jungryo_lee.tv_voc_weighted_corr_intellytics
     weighted_regression: sandbox.z_jungryo_lee.tv_voc_weighted_regression_intellytics
@@ -84,6 +87,12 @@ llm:
       model_version: gpt-5-5
       inference:
         max_tokens: 2200
+
+    gpt_mini:
+      endpoint: databricks-gpt-5-4-mini
+      model_version: gpt-5-4-mini
+      inference:
+        max_tokens: 1400
 
 version:
   prompt_version: v1_intellytics_non_lifestyle
@@ -218,6 +227,24 @@ topic_prototype:
   auto_accept_threshold: 0.82
   llm_fallback_threshold: 0.70
   top_k: 3
+
+ml_classification:
+  enabled: true
+  source_table_key: raw_review_table
+  labeled_embedding_table_key: memo_embedding
+  query_embedding_table_key: memo_embedding_unclassified
+  prototype_table_key: topic_prototype
+  output_table_key: ml_classification_detail
+  llm_fallback_queue_table_key: llm_fallback_queue
+  embedding_model: databricks-bge-large-en
+  fallback_model_key: gpt_mini
+  auto_accept_threshold: 0.80
+  llm_fallback_threshold: 0.00
+  min_prototype_memo_count: 3
+  exclude_existing_classification: true
+  target_sentiments: [1, -1]
+  text_col: memo_norm
+  limit_rows: null
 
 driver_analysis:
   enabled: false
