@@ -97,31 +97,28 @@ def _align_embedding_schema_for_delta(
     embedding_df: DataFrame,
     table_name: str,
 ) -> DataFrame:
-    """Cast embedding array to the existing Delta table element type.
+    """Cast write columns to the existing Delta table schema when possible.
 
     Delta cannot merge `array<float>` into an existing `array<double>` column
-    with the same name. This helper keeps the write compatible with whichever
-    embedding element type the table was created with.
+    with the same name. It also cannot merge string timestamps into an existing
+    timestamp column. This helper keeps appends compatible with the table shape
+    that was created first.
     """
     spark = embedding_df.sparkSession
     if not _table_exists(spark, table_name):
         return embedding_df
 
     existing_schema = spark.table(table_name).schema
-    embedding_field = next(
-        (field for field in existing_schema.fields if field.name == "embedding"),
-        None,
-    )
-    if not embedding_field or not isinstance(embedding_field.dataType, T.ArrayType):
-        return embedding_df
+    aligned_df = embedding_df
+    for field in existing_schema.fields:
+        if field.name not in aligned_df.columns:
+            continue
+        aligned_df = aligned_df.withColumn(
+            field.name,
+            F.col(field.name).cast(field.dataType),
+        )
 
-    element_type = embedding_field.dataType.elementType
-    if isinstance(element_type, T.DoubleType):
-        return embedding_df.withColumn("embedding", F.col("embedding").cast("array<double>"))
-    if isinstance(element_type, T.FloatType):
-        return embedding_df.withColumn("embedding", F.col("embedding").cast("array<float>"))
-
-    return embedding_df
+    return aligned_df
 
 
 def _trusted_label_condition(min_confidence_score: float) -> F.Column:
