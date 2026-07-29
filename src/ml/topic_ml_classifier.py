@@ -144,6 +144,21 @@ def _table_exists(spark: SparkSession, table_name: str) -> bool:
         return False
 
 
+def _align_df_to_existing_delta_schema(df: DataFrame, table_name: str) -> DataFrame:
+    """Cast common columns to the existing Delta table schema before append."""
+    spark = df.sparkSession
+    if not _table_exists(spark, table_name):
+        return df
+
+    existing_schema = spark.table(table_name).schema
+    aligned_df = df
+    for field in existing_schema.fields:
+        if field.name not in aligned_df.columns:
+            continue
+        aligned_df = aligned_df.withColumn(field.name, F.col(field.name).cast(field.dataType))
+    return aligned_df
+
+
 def load_query_embedding_df(
     spark: SparkSession,
     config: dict[str, Any],
@@ -461,8 +476,9 @@ def save_ml_classification(
     """Save ML/prototype classification output."""
     cfg = _cfg(config)
     table_name = get_output_table(config, output_table_key or cfg["output_table_key"])
+    aligned_df = _align_df_to_existing_delta_schema(ml_df, table_name)
     (
-        ml_df.select([field.name for field in ML_CLASSIFICATION_SCHEMA.fields])
+        aligned_df.select([field.name for field in ML_CLASSIFICATION_SCHEMA.fields])
         .write.format("delta")
         .mode(mode)
         .option("mergeSchema", "true")
@@ -483,14 +499,116 @@ def save_llm_fallback_queue(
     table_name = get_output_table(
         config, output_table_key or cfg["llm_fallback_queue_table_key"]
     )
+    aligned_df = _align_df_to_existing_delta_schema(queue_df, table_name)
     (
-        queue_df.select([field.name for field in FALLBACK_QUEUE_SCHEMA.fields])
+        aligned_df.select([field.name for field in FALLBACK_QUEUE_SCHEMA.fields])
         .write.format("delta")
         .mode(mode)
         .option("mergeSchema", "true")
         .saveAsTable(table_name)
     )
     return table_name
+
+
+def load_fallback_required_ml_df(
+    spark: SparkSession,
+    config: dict[str, Any],
+    *,
+    input_table_key: str | None = None,
+) -> DataFrame:
+    """Load all ML rows that require GPT mini fallback for this version."""
+    cfg = _cfg(config)
+    table_name = get_output_table(config, input_table_key or cfg["output_table_key"])
+    return (
+        spark.table(table_name)
+        .where(F.col("prompt_version") == _version_value(config, "prompt_version"))
+        .where(F.col("taxonomy_version") == _version_value(config, "taxonomy_version"))
+        .where(F.col("model_version") == _classification_model_version(config))
+        .where(F.col("classification_stage") == "embedding_prototype_llm_fallback")
+        .dropDuplicates(GROUP_COLS + ["memo_id", "prompt_version", "taxonomy_version", "model_version"])
+    )
+
+
+def _delete_existing_pending_fallback_queue(
+    spark: SparkSession,
+    table_name: str,
+    config: dict[str, Any],
+) -> None:
+    """Delete pending fallback queue rows for the active version/model."""
+    if not _table_exists(spark, table_name):
+        return
+
+    prompt_version = _version_value(config, "prompt_version").replace("'", "''")
+    taxonomy_version = _version_value(config, "taxonomy_version").replace("'", "''")
+    model_version = _classification_model_version(config).replace("'", "''")
+    spark.sql(
+        f"""
+        DELETE FROM {table_name}
+        WHERE prompt_version = '{prompt_version}'
+          AND taxonomy_version = '{taxonomy_version}'
+          AND model_version = '{model_version}'
+          AND status = 'pending'
+        """
+    )
+
+
+def rebuild_llm_fallback_queue_from_ml_classification(
+    spark: SparkSession,
+    config: dict[str, Any],
+    *,
+    input_table_key: str | None = None,
+    output_table_key: str | None = None,
+) -> dict[str, Any]:
+    """Rebuild pending GPT mini queue from the persisted ML classification table."""
+    cfg = _cfg(config)
+    resolved_output_key = output_table_key or cfg["llm_fallback_queue_table_key"]
+    fallback_queue_table = get_output_table(config, resolved_output_key)
+
+    fallback_ml_df = load_fallback_required_ml_df(
+        spark,
+        config,
+        input_table_key=input_table_key,
+    )
+    fallback_required_count = fallback_ml_df.count()
+    queue_df = build_llm_fallback_queue_df(
+        fallback_ml_df,
+        config,
+        created_by="rebuild_llm_fallback_queue",
+    )
+    queue_count = queue_df.count()
+
+    _delete_existing_pending_fallback_queue(spark, fallback_queue_table, config)
+    if queue_count > 0:
+        save_llm_fallback_queue(
+            queue_df,
+            config,
+            output_table_key=resolved_output_key,
+            mode="append",
+        )
+
+    persisted_queue_count = (
+        spark.table(fallback_queue_table)
+        .where(F.col("prompt_version") == _version_value(config, "prompt_version"))
+        .where(F.col("taxonomy_version") == _version_value(config, "taxonomy_version"))
+        .where(F.col("model_version") == _classification_model_version(config))
+        .where(F.col("status") == "pending")
+        .count()
+        if _table_exists(spark, fallback_queue_table)
+        else 0
+    )
+    synced = int(fallback_required_count) == int(persisted_queue_count)
+    print(
+        "[topic_ml_classifier] fallback queue rebuilt | "
+        f"fallback_required={fallback_required_count} | "
+        f"queue_rows={persisted_queue_count} | synced={synced}"
+    )
+
+    return {
+        "fallback_queue_table": fallback_queue_table,
+        "fallback_required_count": int(fallback_required_count),
+        "queue_count": int(persisted_queue_count),
+        "synced": synced,
+    }
 
 
 def classify_and_save_unclassified_memos(
@@ -518,6 +636,10 @@ def classify_and_save_unclassified_memos(
     )
 
     if total_count == 0:
+        queue_result = {"queue_count": 0, "synced": True}
+        ml_table_name = get_output_table(config, _cfg(config)["output_table_key"])
+        if _table_exists(spark, ml_table_name):
+            queue_result = rebuild_llm_fallback_queue_from_ml_classification(spark, config)
         return {
             "classification_table": get_output_table(
                 config, _cfg(config)["output_table_key"]
@@ -528,16 +650,18 @@ def classify_and_save_unclassified_memos(
             "classification_count": 0,
             "auto_accept_count": 0,
             "fallback_count": 0,
+            "fallback_queue_count": queue_result["queue_count"],
+            "fallback_queue_synced": queue_result["synced"],
             "saved": False,
         }
 
     classification_table = save_ml_classification(ml_df, config)
-    queue_df = build_llm_fallback_queue_df(ml_df, config)
-    queue_count = queue_df.count()
-    fallback_queue_table = save_llm_fallback_queue(queue_df, config)
+    queue_result = rebuild_llm_fallback_queue_from_ml_classification(spark, config)
+    fallback_queue_table = queue_result["fallback_queue_table"]
     print(
         "[topic_ml_classifier] saved "
-        f"classification_table={classification_table} fallback_queue_rows={queue_count}"
+        f"classification_table={classification_table} "
+        f"fallback_queue_rows={queue_result['queue_count']}"
     )
 
     return {
@@ -546,6 +670,8 @@ def classify_and_save_unclassified_memos(
         "classification_count": total_count,
         "auto_accept_count": auto_accept_count,
         "fallback_count": fallback_count,
+        "fallback_queue_count": queue_result["queue_count"],
+        "fallback_queue_synced": queue_result["synced"],
         "saved": True,
     }
 
