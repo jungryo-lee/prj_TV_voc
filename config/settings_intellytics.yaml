@@ -211,6 +211,7 @@ memo_embedding:
   enabled: true
   input_table_key: classification_detail
   output_table_key: memo_embedding
+  embedding_model: databricks-bge-large-en
   model_path: /Volumes/sandbox/z_jungryo_lee/tv_voc/bge-large-en-v1.5
   batch_size: 64
   heuristic_label_min_confidence_score: 0.6
