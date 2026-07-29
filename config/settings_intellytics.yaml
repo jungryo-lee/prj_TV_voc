@@ -246,6 +246,7 @@ ml_classification:
   target_sentiments: [1, -1]
   text_col: memo_norm
   limit_rows: null
+  limit_rows_per_group: 200
 
 driver_analysis:
   enabled: false

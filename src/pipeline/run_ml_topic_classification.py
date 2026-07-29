@@ -22,6 +22,7 @@ def run_ml_topic_classification(
     run_classification: bool = True,
     run_llm_fallback: bool = False,
     limit_rows: int | None = None,
+    limit_rows_per_group: int | None = None,
     fallback_limit_rows: int | None = None,
     skip_existing: bool = True,
 ) -> dict[str, Any]:
@@ -38,6 +39,7 @@ def run_ml_topic_classification(
             spark,
             config,
             limit_rows=limit_rows,
+            limit_rows_per_group=limit_rows_per_group,
             skip_existing=skip_existing,
         )
         print(f"[ml_topic_classification] step=embedding finished | {result['embedding']}")
@@ -81,6 +83,7 @@ def parse_args() -> argparse.Namespace:
         help="Path to settings YAML.",
     )
     parser.add_argument("--limit-rows", type=int, default=None)
+    parser.add_argument("--limit-rows-per-group", type=int, default=None)
     parser.add_argument("--fallback-limit-rows", type=int, default=None)
     parser.add_argument("--skip-embedding", action="store_true")
     parser.add_argument("--skip-classification", action="store_true")
@@ -106,6 +109,7 @@ def main() -> None:
         run_classification=not args.skip_classification,
         run_llm_fallback=args.run_llm_fallback,
         limit_rows=args.limit_rows,
+        limit_rows_per_group=args.limit_rows_per_group,
         fallback_limit_rows=args.fallback_limit_rows,
         skip_existing=not args.no_skip_existing,
     )

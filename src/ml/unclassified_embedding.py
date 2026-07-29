@@ -44,6 +44,7 @@ def _cfg(config: dict[str, Any]) -> dict[str, Any]:
         ),
         "text_col": ml_cfg.get("text_col", "memo_norm"),
         "limit_rows": ml_cfg.get("limit_rows"),
+        "limit_rows_per_group": ml_cfg.get("limit_rows_per_group"),
     }
 
 
@@ -104,6 +105,7 @@ def load_raw_unclassified_memo_df(
     config: dict[str, Any],
     *,
     limit_rows: int | None = None,
+    limit_rows_per_group: int | None = None,
 ) -> DataFrame:
     """Load one raw memo per memo_id that is not in existing classification_detail."""
     cfg = _cfg(config)
@@ -151,6 +153,30 @@ def load_raw_unclassified_memo_df(
         .where(F.col("_rn") == 1)
         .drop("_rn")
     )
+
+    effective_limit_per_group = (
+        limit_rows_per_group
+        if limit_rows_per_group is not None
+        else cfg["limit_rows_per_group"]
+    )
+    if effective_limit_per_group is not None:
+        balanced_window = Window.partitionBy(*GROUP_COLS).orderBy(
+            F.md5(
+                F.concat_ws(
+                    "||",
+                    F.coalesce(F.col("memo_id"), F.lit("")),
+                    F.coalesce(F.col("cate_1_depth"), F.lit("")),
+                    F.coalesce(F.col("cate_2_depth"), F.lit("")),
+                    F.coalesce(F.col("sc_measurement").cast("string"), F.lit("")),
+                    F.lit("ml_unclassified_balanced_sample"),
+                )
+            )
+        )
+        deduped_df = (
+            deduped_df.withColumn("_group_sample_rn", F.row_number().over(balanced_window))
+            .where(F.col("_group_sample_rn") <= int(effective_limit_per_group))
+            .drop("_group_sample_rn")
+        )
 
     effective_limit = limit_rows if limit_rows is not None else cfg["limit_rows"]
     if effective_limit is not None:
@@ -295,6 +321,7 @@ def build_and_save_unclassified_embeddings(
     output_table_key: str | None = None,
     embedding_model: str | None = None,
     limit_rows: int | None = None,
+    limit_rows_per_group: int | None = None,
     skip_existing: bool = True,
 ) -> dict[str, Any]:
     """Build and save embeddings for unclassified raw memos."""
@@ -306,6 +333,7 @@ def build_and_save_unclassified_embeddings(
         spark,
         config,
         limit_rows=limit_rows,
+        limit_rows_per_group=limit_rows_per_group,
     )
     raw_target_count = query_df.count()
     print(f"[unclassified_embedding] raw target rows={raw_target_count}")
