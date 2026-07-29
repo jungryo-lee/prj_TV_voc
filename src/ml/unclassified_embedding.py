@@ -15,7 +15,7 @@ from common.config_loader import (
     get_source_table,
 )
 from common.memo_id import with_memo_id
-from ml.memo_embedding import MEMO_EMBEDDING_SCHEMA
+from ml.memo_embedding import MEMO_EMBEDDING_SCHEMA, _align_embedding_schema_for_delta
 
 
 GROUP_COLS = ["cate_1_depth", "cate_2_depth", "sc_measurement"]
@@ -277,8 +277,9 @@ def save_query_embeddings(
     """Save raw unclassified memo embeddings."""
     cfg = _cfg(config)
     table_name = get_output_table(config, output_table_key or cfg["query_embedding_table_key"])
+    aligned_df = _align_embedding_schema_for_delta(embedding_df, table_name)
     (
-        embedding_df.select([field.name for field in MEMO_EMBEDDING_SCHEMA.fields])
+        aligned_df.select([field.name for field in MEMO_EMBEDDING_SCHEMA.fields])
         .write.format("delta")
         .mode(mode)
         .option("mergeSchema", "true")

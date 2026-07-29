@@ -93,6 +93,37 @@ def _table_exists(spark: SparkSession, table_name: str) -> bool:
         return False
 
 
+def _align_embedding_schema_for_delta(
+    embedding_df: DataFrame,
+    table_name: str,
+) -> DataFrame:
+    """Cast embedding array to the existing Delta table element type.
+
+    Delta cannot merge `array<float>` into an existing `array<double>` column
+    with the same name. This helper keeps the write compatible with whichever
+    embedding element type the table was created with.
+    """
+    spark = embedding_df.sparkSession
+    if not _table_exists(spark, table_name):
+        return embedding_df
+
+    existing_schema = spark.table(table_name).schema
+    embedding_field = next(
+        (field for field in existing_schema.fields if field.name == "embedding"),
+        None,
+    )
+    if not embedding_field or not isinstance(embedding_field.dataType, T.ArrayType):
+        return embedding_df
+
+    element_type = embedding_field.dataType.elementType
+    if isinstance(element_type, T.DoubleType):
+        return embedding_df.withColumn("embedding", F.col("embedding").cast("array<double>"))
+    if isinstance(element_type, T.FloatType):
+        return embedding_df.withColumn("embedding", F.col("embedding").cast("array<float>"))
+
+    return embedding_df
+
+
 def _trusted_label_condition(min_confidence_score: float) -> F.Column:
     """Return stage-aware condition for embedding label inclusion.
 
@@ -371,9 +402,10 @@ def save_memo_embeddings(
     cfg = _embedding_cfg(config)
     resolved_output_key = output_table_key or cfg["output_table_key"]
     table_name = get_output_table(config, resolved_output_key)
+    aligned_df = _align_embedding_schema_for_delta(embedding_df, table_name)
 
     (
-        embedding_df.select([field.name for field in MEMO_EMBEDDING_SCHEMA.fields])
+        aligned_df.select([field.name for field in MEMO_EMBEDDING_SCHEMA.fields])
         .write.format("delta")
         .mode(mode)
         .option("mergeSchema", "true")
