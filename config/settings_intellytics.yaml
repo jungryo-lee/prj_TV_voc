@@ -45,9 +45,13 @@ tables:
     rule_profile: sandbox.z_jungryo_lee.tv_voc_rule_profile_intellytics
     clue_keyword: sandbox.z_jungryo_lee.tv_voc_clue_keyword_intellytics
     topic_pool: sandbox.z_jungryo_lee.tv_voc_topic_pool_intellytics
+    topic_group: sandbox.z_jungryo_lee.tv_voc_topic_group_intellytics
     classification_detail: sandbox.z_jungryo_lee.tv_voc_classification_detail_intellytics
     classification_full: sandbox.z_jungryo_lee.tv_voc_classification_full_intellytics
     classification_summary: sandbox.z_jungryo_lee.tv_voc_classification_summary_intellytics
+    classification_detail_final: sandbox.z_jungryo_lee.tv_voc_classification_detail_final_intellytics
+    classification_tableau_final: sandbox.z_jungryo_lee.tv_voc_classification_tableau_final_intellytics
+    classification_tableau_grouped_final: sandbox.z_jungryo_lee.tv_voc_classification_tableau_grouped_final_intellytics
     review_decision: sandbox.z_jungryo_lee.tv_voc_review_decision_intellytics
     topic_pool_revision: sandbox.z_jungryo_lee.tv_voc_topic_pool_revision_intellytics
     memo_embedding: sandbox.z_jungryo_lee.tv_voc_memo_embedding_intellytics
@@ -188,6 +192,16 @@ topic_pool:
     "13. 전반적 평가||13-01. 전반적 평가":
       min_final_topics: 4
       max_final_topics: 8
+
+topic_group:
+  enabled: true
+  input_table_key: topic_pool
+  output_table_key: topic_group
+  model_key: gpt_55
+  min_groups: 3
+  max_groups: 5
+  special_group_name: 기타
+  special_topic_types: [overall, others, llm_fallback]
 
 classification:
   enabled: false

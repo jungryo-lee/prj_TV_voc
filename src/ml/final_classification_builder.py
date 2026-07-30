@@ -1,0 +1,380 @@
+"""Build final Tableau-ready topic classification outputs.
+
+This module consumes the stage-12 ML/GPT-mini classification result and creates:
+- memo_id-level final detail table
+- raw-review-row-level Tableau table with memo_id and final topic columns attached
+"""
+
+from __future__ import annotations
+
+from datetime import datetime
+from typing import Any
+
+from pyspark.sql import DataFrame, SparkSession
+from pyspark.sql import functions as F
+from pyspark.sql.window import Window
+
+from common.config_loader import get_output_table, get_source_filters, get_source_table
+from common.memo_id import with_memo_id
+from ml.topic_ml_classifier import ML_CLASSIFICATION_SCHEMA
+
+
+GROUP_KEYS = ["cate_1_depth", "cate_2_depth", "sc_measurement"]
+MEMO_KEYS = GROUP_KEYS + ["memo_id"]
+FINAL_ACCEPT_STAGES = ["gpt_mini_fallback", "embedding_prototype_auto_accept"]
+PENDING_FALLBACK_STAGE = "embedding_prototype_llm_fallback"
+PENDING_FALLBACK_TOPIC = "LLM_FALLBACK_REQUIRED"
+
+
+def _version_value(config: dict[str, Any], key: str, default: str = "") -> str:
+    """Return version metadata as string."""
+    return str((config.get("version", {}) or {}).get(key, default) or default)
+
+
+def _runtime_value(config: dict[str, Any], key: str, default: str = "") -> str:
+    """Return runtime metadata as string."""
+    return str((config.get("runtime", {}) or {}).get(key, default) or default)
+
+
+def _sql_escape(value: str) -> str:
+    """Escape a value for SQL literal usage."""
+    return str(value).replace("'", "''")
+
+
+def _table_exists(spark: SparkSession, table_name: str) -> bool:
+    """Return whether a Spark table exists."""
+    try:
+        return bool(spark.catalog.tableExists(table_name))
+    except Exception:
+        return False
+
+
+def _delete_active_version_rows(
+    spark: SparkSession,
+    table_name: str,
+    config: dict[str, Any],
+) -> None:
+    """Delete rows for the active prompt/taxonomy version before re-saving."""
+    if not _table_exists(spark, table_name):
+        return
+
+    prompt_version = _sql_escape(_version_value(config, "prompt_version"))
+    taxonomy_version = _sql_escape(_version_value(config, "taxonomy_version"))
+    spark.sql(
+        f"""
+        DELETE FROM {table_name}
+        WHERE prompt_version = '{prompt_version}'
+          AND taxonomy_version = '{taxonomy_version}'
+        """
+    )
+
+
+def load_ml_classification_df(
+    spark: SparkSession,
+    config: dict[str, Any],
+    *,
+    input_table_key: str = "ml_classification_detail",
+) -> DataFrame:
+    """Load active-version stage-12 classification rows."""
+    table_name = get_output_table(config, input_table_key)
+    return (
+        spark.table(table_name)
+        .where(F.col("prompt_version") == _version_value(config, "prompt_version"))
+        .where(F.col("taxonomy_version") == _version_value(config, "taxonomy_version"))
+    )
+
+
+def summarize_ml_classification_result(
+    spark: SparkSession,
+    config: dict[str, Any],
+    *,
+    input_table_key: str = "ml_classification_detail",
+) -> dict[str, Any]:
+    """Return stage-12 completion summary before finalization."""
+    df = load_ml_classification_df(spark, config, input_table_key=input_table_key)
+    accepted_df = df.where(F.col("classification_stage").isin(FINAL_ACCEPT_STAGES))
+    pending_df = df.where(
+        (F.col("classification_stage") == PENDING_FALLBACK_STAGE)
+        & (F.col("pred_topic") == PENDING_FALLBACK_TOPIC)
+    )
+    fallback_done_keys = (
+        df.where(F.col("classification_stage") == "gpt_mini_fallback")
+        .select(*MEMO_KEYS)
+        .dropDuplicates()
+    )
+    unresolved_pending_df = pending_df.join(
+        fallback_done_keys,
+        on=MEMO_KEYS,
+        how="left_anti",
+    )
+
+    return {
+        "ml_total_rows": int(df.count()),
+        "accepted_final_candidate_rows": int(accepted_df.count()),
+        "accepted_final_distinct_memo_ids": int(
+            accepted_df.select(*MEMO_KEYS).dropDuplicates().count()
+        ),
+        "pending_fallback_rows": int(pending_df.count()),
+        "unresolved_pending_fallback_rows": int(unresolved_pending_df.count()),
+        "gpt_mini_fallback_rows": int(
+            df.where(F.col("classification_stage") == "gpt_mini_fallback").count()
+        ),
+    }
+
+
+def build_final_classification_detail_df(
+    spark: SparkSession,
+    config: dict[str, Any],
+    *,
+    input_table_key: str = "ml_classification_detail",
+    created_by: str = "final_classification_builder",
+) -> DataFrame:
+    """Pick one final classification row per group/memo_id.
+
+    GPT-mini fallback decisions outrank prototype auto-accepted decisions when both
+    exist for the same memo_id. Pending fallback placeholders are intentionally
+    excluded from the final output.
+    """
+    df = load_ml_classification_df(spark, config, input_table_key=input_table_key)
+    final_candidates = df.where(F.col("classification_stage").isin(FINAL_ACCEPT_STAGES))
+
+    priority_col = (
+        F.when(F.col("classification_stage") == "gpt_mini_fallback", F.lit(1))
+        .when(F.col("classification_stage") == "embedding_prototype_auto_accept", F.lit(2))
+        .otherwise(F.lit(99))
+    )
+    latest_window = Window.partitionBy(*MEMO_KEYS).orderBy(
+        priority_col.asc(),
+        F.col("created_at").desc_nulls_last(),
+        F.col("run_id").desc_nulls_last(),
+    )
+
+    created_at = datetime.utcnow().isoformat(timespec="seconds")
+    run_id = _runtime_value(config, "resolved_run_id")
+    run_date = _runtime_value(config, "resolved_run_date")
+    pipeline_version = _version_value(config, "pipeline_version")
+
+    selected_df = (
+        final_candidates.withColumn("_final_rn", F.row_number().over(latest_window))
+        .where(F.col("_final_rn") == 1)
+        .drop("_final_rn")
+    )
+
+    return selected_df.select(
+        F.col("memo_id").cast("string"),
+        F.col("memo").cast("string"),
+        F.col("memo_norm").cast("string"),
+        F.col("cate_1_depth").cast("string"),
+        F.col("cate_2_depth").cast("string"),
+        F.col("sc_measurement").cast("int"),
+        F.col("pred_topic").cast("string"),
+        F.col("pred_topic_type").cast("string"),
+        F.col("classification_stage").cast("string"),
+        F.col("confidence_score").cast("double"),
+        F.lit(False).cast("boolean").alias("review_needed_yn"),
+        F.col("llm_used_yn").cast("boolean"),
+        F.col("match_reason").cast("string"),
+        F.col("candidate_topics_json").cast("string"),
+        F.col("fallback_model_key").cast("string"),
+        F.col("fallback_model_version").cast("string"),
+        F.lit(run_id).cast("string").alias("run_id"),
+        F.lit(run_date).cast("string").alias("run_date"),
+        F.col("prompt_version").cast("string"),
+        F.col("taxonomy_version").cast("string"),
+        F.col("model_version").cast("string"),
+        F.lit(pipeline_version).cast("string").alias("pipeline_version"),
+        F.lit(created_at).cast("string").alias("created_at"),
+        F.lit(created_by).cast("string").alias("created_by"),
+    )
+
+
+def save_final_classification_detail(
+    spark: SparkSession,
+    config: dict[str, Any],
+    final_detail_df: DataFrame,
+    *,
+    output_table_key: str = "classification_detail_final",
+    write_mode: str = "replace_version",
+) -> str:
+    """Save memo_id-level final classification detail."""
+    table_name = get_output_table(config, output_table_key)
+    write_df = final_detail_df.select(
+        [F.col(field.name).cast(field.dataType).alias(field.name) for field in ML_CLASSIFICATION_SCHEMA.fields]
+    )
+
+    if write_mode == "overwrite":
+        write_df.write.format("delta").mode("overwrite").option("overwriteSchema", "true").saveAsTable(table_name)
+        return table_name
+    if write_mode == "replace_version":
+        _delete_active_version_rows(spark, table_name, config)
+        write_df.write.format("delta").mode("append").option("mergeSchema", "true").saveAsTable(table_name)
+        return table_name
+    if write_mode == "append":
+        write_df.write.format("delta").mode("append").option("mergeSchema", "true").saveAsTable(table_name)
+        return table_name
+
+    raise ValueError(f"Unsupported write_mode: {write_mode}")
+
+
+def _build_source_filter_condition(config: dict[str, Any]) -> F.Column:
+    """Build a Spark SQL condition from configured source filters."""
+    filters = get_source_filters(config, "raw_review_table")
+    condition = F.lit(True)
+    for item in filters:
+        condition = condition & F.expr(item)
+    return condition
+
+
+def build_tableau_final_df(
+    spark: SparkSession,
+    config: dict[str, Any],
+    *,
+    final_detail_table_key: str = "classification_detail_final",
+) -> DataFrame:
+    """Join final memo classifications back to the original Intellytics rows."""
+    raw_table = get_source_table(config, "raw_review_table")
+    final_detail_table = get_output_table(config, final_detail_table_key)
+
+    raw_df = (
+        spark.table(raw_table)
+        .where(F.col("memo").isNotNull())
+        .where(F.length(F.trim(F.col("memo").cast("string"))) > 0)
+        .where(_build_source_filter_condition(config))
+    )
+    raw_with_id_df = with_memo_id(raw_df)
+
+    final_detail_df = (
+        spark.table(final_detail_table)
+        .where(F.col("prompt_version") == _version_value(config, "prompt_version"))
+        .where(F.col("taxonomy_version") == _version_value(config, "taxonomy_version"))
+        .select(
+            *MEMO_KEYS,
+            F.col("pred_topic").alias("final_pred_topic"),
+            F.col("pred_topic_type").alias("final_pred_topic_type"),
+            F.col("classification_stage").alias("final_classification_stage"),
+            F.col("confidence_score").alias("final_confidence_score"),
+            F.col("llm_used_yn").alias("final_llm_used_yn"),
+            F.col("match_reason").alias("final_match_reason"),
+            F.col("candidate_topics_json").alias("final_candidate_topics_json"),
+            F.col("run_id").alias("final_run_id"),
+            F.col("run_date").alias("final_run_date"),
+            "prompt_version",
+            "taxonomy_version",
+            "model_version",
+            "pipeline_version",
+            F.col("created_at").alias("final_created_at"),
+        )
+    )
+
+    return (
+        raw_with_id_df.alias("raw")
+        .join(final_detail_df.alias("cls"), on=MEMO_KEYS, how="inner")
+        .select(
+            "raw.*",
+            F.col("cls.final_pred_topic").alias("pred_topic"),
+            F.col("cls.final_pred_topic_type").alias("pred_topic_type"),
+            F.col("cls.final_classification_stage").alias("classification_stage"),
+            F.col("cls.final_confidence_score").alias("confidence_score"),
+            F.col("cls.final_llm_used_yn").alias("llm_used_yn"),
+            F.col("cls.final_match_reason").alias("match_reason"),
+            F.col("cls.final_candidate_topics_json").alias("candidate_topics_json"),
+            F.col("cls.final_run_id").alias("classification_run_id"),
+            F.col("cls.final_run_date").alias("classification_run_date"),
+            F.col("cls.prompt_version"),
+            F.col("cls.taxonomy_version"),
+            F.col("cls.model_version"),
+            F.col("cls.pipeline_version"),
+            F.col("cls.final_created_at").alias("classification_created_at"),
+        )
+    )
+
+
+def save_tableau_final(
+    spark: SparkSession,
+    config: dict[str, Any],
+    tableau_df: DataFrame,
+    *,
+    output_table_key: str = "classification_tableau_final",
+    write_mode: str = "replace_version",
+) -> str:
+    """Save the raw-row-level Tableau final table."""
+    table_name = get_output_table(config, output_table_key)
+
+    if write_mode == "overwrite":
+        tableau_df.write.format("delta").mode("overwrite").option("overwriteSchema", "true").saveAsTable(table_name)
+        return table_name
+    if write_mode == "replace_version":
+        _delete_active_version_rows(spark, table_name, config)
+        tableau_df.write.format("delta").mode("append").option("mergeSchema", "true").saveAsTable(table_name)
+        return table_name
+    if write_mode == "append":
+        tableau_df.write.format("delta").mode("append").option("mergeSchema", "true").saveAsTable(table_name)
+        return table_name
+
+    raise ValueError(f"Unsupported write_mode: {write_mode}")
+
+
+def build_and_save_final_classification_outputs(
+    spark: SparkSession,
+    config: dict[str, Any],
+    *,
+    input_table_key: str = "ml_classification_detail",
+    final_detail_table_key: str = "classification_detail_final",
+    tableau_table_key: str = "classification_tableau_final",
+    write_mode: str = "replace_version",
+) -> dict[str, Any]:
+    """Build and save both final memo-level and Tableau-ready raw-row outputs."""
+    print("[final_classification] validating stage-12 result")
+    before_summary = summarize_ml_classification_result(
+        spark,
+        config,
+        input_table_key=input_table_key,
+    )
+    print("[final_classification] stage-12 summary =", before_summary)
+
+    final_detail_df = build_final_classification_detail_df(
+        spark,
+        config,
+        input_table_key=input_table_key,
+    )
+    final_detail_count = final_detail_df.count()
+    print(f"[final_classification] final detail rows={final_detail_count}")
+
+    final_detail_table = save_final_classification_detail(
+        spark,
+        config,
+        final_detail_df,
+        output_table_key=final_detail_table_key,
+        write_mode=write_mode,
+    )
+    print(f"[final_classification] saved final detail table={final_detail_table}")
+
+    tableau_df = build_tableau_final_df(
+        spark,
+        config,
+        final_detail_table_key=final_detail_table_key,
+    )
+    tableau_count = tableau_df.count()
+    tableau_distinct_memo_count = tableau_df.select("memo_id").dropDuplicates().count()
+    print(
+        "[final_classification] tableau rows="
+        f"{tableau_count} distinct_memo_ids={tableau_distinct_memo_count}"
+    )
+
+    tableau_table = save_tableau_final(
+        spark,
+        config,
+        tableau_df,
+        output_table_key=tableau_table_key,
+        write_mode=write_mode,
+    )
+    print(f"[final_classification] saved tableau table={tableau_table}")
+
+    return {
+        **before_summary,
+        "final_detail_table": final_detail_table,
+        "final_detail_rows": int(final_detail_count),
+        "tableau_table": tableau_table,
+        "tableau_rows": int(tableau_count),
+        "tableau_distinct_memo_ids": int(tableau_distinct_memo_count),
+    }
