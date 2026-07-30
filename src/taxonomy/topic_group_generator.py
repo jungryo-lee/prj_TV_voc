@@ -470,6 +470,77 @@ def save_topic_groups(
     raise ValueError(f"Unsupported write_mode: {write_mode}")
 
 
+def load_latest_topic_group_df(
+    spark: SparkSession,
+    config: dict[str, Any],
+    *,
+    topic_group_table_key: str = "topic_group",
+    model_key: str | None = None,
+) -> DataFrame:
+    """Load one latest topic_group row per group/topic for the active version."""
+    cfg = _cfg(config)
+    table_name = get_output_table(config, topic_group_table_key or cfg["output_table_key"])
+    resolved_model_key = model_key or cfg["model_key"]
+    resolved_model_version = _model_version(config, resolved_model_key)
+
+    df = (
+        spark.table(table_name)
+        .where(F.col("prompt_version") == _version_value(config, "prompt_version"))
+        .where(F.col("taxonomy_version") == _version_value(config, "taxonomy_version"))
+        .where(F.col("model_version") == resolved_model_version)
+    )
+
+    latest_window = Window.partitionBy(
+        *GROUP_KEYS,
+        "topic",
+        "prompt_version",
+        "taxonomy_version",
+        "model_version",
+    ).orderBy(
+        F.col("is_latest").desc_nulls_last(),
+        F.col("created_at").desc_nulls_last(),
+        F.col("run_id").desc_nulls_last(),
+    )
+
+    return (
+        df.withColumn("_topic_group_rn", F.row_number().over(latest_window))
+        .where(F.col("_topic_group_rn") == 1)
+        .drop("_topic_group_rn")
+    )
+
+
+def _filter_existing_topic_group_keys(
+    spark: SparkSession,
+    config: dict[str, Any],
+    groups: list[tuple[str, str, int]],
+    *,
+    model_key: str | None = None,
+) -> list[tuple[str, str, int]]:
+    """Return only groups without an active topic_group mapping."""
+    if not groups:
+        return groups
+
+    table_name = get_output_table(config, _cfg(config)["output_table_key"])
+    if not spark.catalog.tableExists(table_name):
+        return groups
+
+    existing_rows = (
+        load_latest_topic_group_df(spark, config, model_key=model_key)
+        .select(*GROUP_KEYS)
+        .dropDuplicates()
+        .collect()
+    )
+    existing = {
+        (
+            str(row["cate_1_depth"]),
+            str(row["cate_2_depth"]),
+            int(row["sc_measurement"]),
+        )
+        for row in existing_rows
+    }
+    return [group for group in groups if group not in existing]
+
+
 def load_topic_pool_groups(
     spark: SparkSession,
     config: dict[str, Any],
@@ -508,15 +579,26 @@ def generate_and_save_topic_groups(
     sc_measurement: int | None = None,
     limit_groups: int | None = None,
     model_key: str | None = None,
+    skip_existing: bool = True,
     write_mode: str = "replace_groups",
 ) -> dict[str, Any]:
     """Generate topic groups for selected topic-pool groups and save them."""
-    groups = load_topic_pool_groups(
+    all_groups = load_topic_pool_groups(
         spark,
         config,
         cate_1_depth=cate_1_depth,
         cate_2_depth=cate_2_depth,
         sc_measurement=sc_measurement,
+    )
+    groups = (
+        _filter_existing_topic_group_keys(
+            spark,
+            config,
+            all_groups,
+            model_key=model_key,
+        )
+        if skip_existing
+        else all_groups
     )
     if limit_groups is not None:
         groups = groups[: int(limit_groups)]
@@ -544,6 +626,8 @@ def generate_and_save_topic_groups(
 
     return {
         "table_name": table_name,
+        "available_group_count": len(all_groups),
+        "skipped_existing_group_count": len(all_groups) - len(groups) if skip_existing else 0,
         "group_count": len(groups),
         "topic_group_row_count": sum(len(result.get("topics") or []) for result in results),
     }
@@ -567,9 +651,11 @@ def build_tableau_grouped_final_df(
         .where(F.col("taxonomy_version") == _version_value(config, "taxonomy_version"))
     )
     group_df = (
-        spark.table(topic_group_table)
-        .where(F.col("prompt_version") == _version_value(config, "prompt_version"))
-        .where(F.col("taxonomy_version") == _version_value(config, "taxonomy_version"))
+        load_latest_topic_group_df(
+            spark,
+            config,
+            topic_group_table_key=topic_group_table_key,
+        )
         .select(
             *GROUP_KEYS,
             F.col("topic").alias("_group_topic"),
