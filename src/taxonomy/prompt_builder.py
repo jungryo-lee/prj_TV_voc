@@ -850,6 +850,9 @@ def build_rule_profile_messages(
     cate_2_depth: str,
     sc_measurement: int,
     sample_memos: list[str],
+    *,
+    compact_mode: bool = False,
+    feature_hint_max_items: int = 40,
 ) -> list[dict[str, str]]:
     """Build messages for rule-profile generation."""
     polarity_label = sc_label(sc_measurement)
@@ -857,10 +860,35 @@ def build_rule_profile_messages(
     feature_patterns = get_rule_profile_prompt_feature_hints(
         cate_1_depth,
         cate_2_depth,
-        max_items=40,
+        max_items=feature_hint_max_items if compact_mode else 40,
     )
 
-    system = f"""
+    if compact_mode:
+        system = f"""
+You are a VOC rule designer for TV review topic classification.
+
+Category: {cate_1_depth} / {cate_2_depth} / {polarity_label}
+Fixed overall fallback topic: {overall_name}
+
+Goal:
+- Build compact classification guidance for separating pure sentiment-only memos from concrete reason/feature memos.
+- {overall_name} is allowed only when the memo has sentiment but no feature, reason, object, symptom, function, attribute, or usage context.
+
+Category feature hints:
+{json.dumps(feature_patterns, ensure_ascii=False)}
+
+Return JSON only:
+{{
+  "overall_allowed_rule": "",
+  "overall_block_rule": "",
+  "overall_sentiment_terms": [""],
+  "feature_hint_terms": [""],
+  "reason_signal_terms": [""],
+  "non_overall_examples": [""]
+}}
+"""
+    else:
+        system = f"""
 You are a VOC rule designer for TV review topic classification.
 
 Category:
@@ -923,12 +951,41 @@ def build_category_pattern_seed_messages(
     cate_2_depth: str,
     sc_measurement: int,
     sample_memos: list[str],
+    *,
+    compact_mode: bool = False,
+    common_pattern_max_items: int = 120,
 ) -> list[dict[str, str]]:
     """Build messages for generating category seed patterns for new categories."""
     polarity_label = sc_label(sc_measurement)
-    common_patterns = COMMON_FEATURE_PATTERNS[:120]
+    common_patterns = COMMON_FEATURE_PATTERNS[:common_pattern_max_items]
 
-    system = f"""
+    if compact_mode:
+        system = f"""
+You are a VOC taxonomy bootstrap designer.
+
+Category: {cate_1_depth} / {cate_2_depth} / {polarity_label}
+
+Infer compact seed terms that help topic generation:
+- feature_hint_terms: objects/functions/targets/synonyms
+- reason_signal_terms: attributes/symptoms/states
+- overall_sentiment_terms: pure sentiment words only
+- candidate_topic_labels: concise Korean labels
+
+Reference vocabulary:
+{json.dumps(common_patterns, ensure_ascii=False)}
+
+Return JSON only:
+{{
+  "category_summary": "",
+  "feature_hint_terms": [""],
+  "reason_signal_terms": [""],
+  "overall_sentiment_terms": [""],
+  "candidate_topic_labels": [""],
+  "sample_non_overall_memos": [""]
+}}
+"""
+    else:
+        system = f"""
 You are a VOC taxonomy bootstrap designer for TV review topic classification.
 
 Category:
@@ -988,35 +1045,75 @@ def build_topic_pool_messages(
     rule_profile: dict[str, Any],
     min_final_topics: int,
     max_final_topics: int,
+    *,
+    compact_mode: bool = False,
+    feature_hint_max_items: int = 25,
+    rule_term_max_items: int = 25,
+    non_overall_example_max_items: int = 8,
 ) -> list[dict[str, str]]:
     """Build messages for topic-pool generation."""
     overall_name = overall_topic_name(sc_measurement)
     feature_patterns = get_rule_profile_prompt_feature_hints(
         cate_1_depth,
         cate_2_depth,
-        max_items=25,
+        max_items=feature_hint_max_items if compact_mode else 25,
     )
 
     overall_allowed_rule = clean_text(rule_profile.get("overall_allowed_rule"))
     overall_block_rule = clean_text(rule_profile.get("overall_block_rule"))
     overall_sentiment_terms = _compact_prompt_terms(
         rule_profile.get("overall_sentiment_terms", []) or [],
-        max_items=15,
+        max_items=min(15, rule_term_max_items) if compact_mode else 15,
     )
     feature_hint_terms = _compact_prompt_terms(
         rule_profile.get("feature_hint_terms", []) or [],
-        max_items=25,
+        max_items=rule_term_max_items if compact_mode else 25,
     )
     reason_signal_terms = _compact_prompt_terms(
         rule_profile.get("reason_signal_terms", []) or [],
-        max_items=25,
+        max_items=rule_term_max_items if compact_mode else 25,
     )
     non_overall_examples = _compact_prompt_terms(
         rule_profile.get("non_overall_examples", []) or [],
-        max_items=8,
+        max_items=non_overall_example_max_items if compact_mode else 8,
     )
 
-    system = f"""
+    if compact_mode:
+        system = f"""
+You are a VOC taxonomy designer for TV review topic classification.
+
+Category: {cate_1_depth} / {cate_2_depth} / {sc_label(sc_measurement)}
+Mandatory overall topic: {overall_name}
+Topic count: {int(min_final_topics)} to {int(max_final_topics)}
+
+Rules:
+- Include "{overall_name}" exactly once.
+- "{overall_name}" is only for pure sentiment-only memos with no usable reason.
+- Concrete feature/attribute/symptom/object/function/context memos need specific topics.
+- Topic labels must be concise Korean labels.
+- Merge near-synonyms; avoid tiny topics.
+
+Compact guidance:
+- overall_allowed_rule: {overall_allowed_rule}
+- overall_block_rule: {overall_block_rule}
+- feature_hint_terms: {json.dumps(feature_hint_terms, ensure_ascii=False)}
+- reason_signal_terms: {json.dumps(reason_signal_terms, ensure_ascii=False)}
+- non_overall_examples: {json.dumps(non_overall_examples, ensure_ascii=False)}
+- category_feature_hints: {json.dumps(feature_patterns, ensure_ascii=False)}
+
+Return JSON only:
+{{
+  "topics": [
+    {{
+      "topic": "",
+      "description": "",
+      "representative_memos": [""]
+    }}
+  ]
+}}
+"""
+    else:
+        system = f"""
 You are a VOC taxonomy designer for TV review topic classification.
 
 Category:

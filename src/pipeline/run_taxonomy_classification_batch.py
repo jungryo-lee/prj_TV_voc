@@ -541,6 +541,7 @@ def run_taxonomy_classification_batch(
     save_rule_profile: bool = True,
     save_topic_pool: bool = True,
     save_classification_detail: bool = True,
+    run_sample_classification: bool | None = None,
     source_period_start: str | None = None,
     source_period_end: str | None = None,
     resume_from_checkpoint: bool = True,
@@ -562,6 +563,11 @@ def run_taxonomy_classification_batch(
     prompt_version = _version_value(effective_config, "prompt_version")
     taxonomy_version = _version_value(effective_config, "taxonomy_version")
     pipeline_cfg = effective_config.get("pipeline", {}) or {}
+    resolved_run_sample_classification = (
+        bool(run_sample_classification)
+        if run_sample_classification is not None
+        else bool(pipeline_cfg.get("run_sample_classification_in_design_batch", True))
+    )
     max_failed_group_retries = int(pipeline_cfg.get("max_failed_group_retries", 2))
     checkpoint_key = _checkpoint_key(
         model_key=model_key,
@@ -607,7 +613,8 @@ def run_taxonomy_classification_batch(
             f"checkpoint_key={checkpoint_key} | "
             f"completed_checkpoint_groups={len(completed_signatures)} | "
             f"failed_retry_groups={len(failed_retry_counts)} | "
-            f"max_failed_group_retries={max_failed_group_retries}"
+            f"max_failed_group_retries={max_failed_group_retries} | "
+            f"run_sample_classification={resolved_run_sample_classification}"
         )
 
     classification_summaries: list[dict[str, Any]] = []
@@ -622,6 +629,25 @@ def run_taxonomy_classification_batch(
         group_cate_2 = group_row["cate_2_depth"]
         group_sc = int(group_row["sc_measurement"])
         signature = _group_signature(group_cate_1, group_cate_2, group_sc)
+
+        if not resolved_run_sample_classification:
+            existing_topic_pool_for_design_only = load_existing_topic_pool_result(
+                spark,
+                effective_config,
+                cate_1_depth=group_cate_1,
+                cate_2_depth=group_cate_2,
+                sc_measurement=group_sc,
+                model_key=model_key,
+            )
+            if existing_topic_pool_for_design_only is not None:
+                skipped_group_count += 1
+                if print_progress:
+                    print(
+                        f"[{PIPELINE_NAME}] skip {index}/{len(target_groups)} | "
+                        f"{group_cate_1} / {group_cate_2} / {group_sc} | "
+                        "reason=topic_pool_exists_design_only"
+                    )
+                continue
 
         existing_classification_summary = (
             load_existing_classification_summary(
@@ -820,35 +846,52 @@ def run_taxonomy_classification_batch(
                     message="topic_pool available",
                 )
 
-            if print_progress:
-                print("  - classifying memos")
-            classification_result = classify_topic_for_group(
-                spark,
-                config=effective_config,
-                rule_profile=rule_profile_result,
-                topic_pool=topic_pool_result,
-                cate_1_depth=group_cate_1,
-                cate_2_depth=group_cate_2,
-                sc_measurement=group_sc,
-                model_key=model_key,
-                max_rows=max_rows_per_group,
-                use_llm_fallback=use_llm_fallback,
-            )
-            classification_summary = _summarize_classification_result(
-                classification_result
-            )
-
-            if save_classification_detail:
+            if resolved_run_sample_classification:
                 if print_progress:
-                    print("  - saving classification_detail")
-                saved_tables["classification_detail"] = save_classification_details(
-                    spark=spark,
+                    print("  - classifying memos")
+                classification_result = classify_topic_for_group(
+                    spark,
                     config=effective_config,
-                    results=[classification_result],
+                    rule_profile=rule_profile_result,
+                    topic_pool=topic_pool_result,
+                    cate_1_depth=group_cate_1,
+                    cate_2_depth=group_cate_2,
+                    sc_measurement=group_sc,
                     model_key=model_key,
-                    write_mode="replace_groups",
-                    source_period_start=source_period_start,
-                    source_period_end=source_period_end,
+                    max_rows=max_rows_per_group,
+                    use_llm_fallback=use_llm_fallback,
+                )
+                classification_summary = _summarize_classification_result(
+                    classification_result
+                )
+
+                if save_classification_detail:
+                    if print_progress:
+                        print("  - saving classification_detail")
+                    saved_tables["classification_detail"] = save_classification_details(
+                        spark=spark,
+                        config=effective_config,
+                        results=[classification_result],
+                        model_key=model_key,
+                        write_mode="replace_groups",
+                        source_period_start=source_period_start,
+                        source_period_end=source_period_end,
+                    )
+            else:
+                if print_progress:
+                    print("  - skipping sample classification by config")
+                classification_summary = _summarize_classification_result(
+                    {
+                        "cate_1_depth": group_cate_1,
+                        "cate_2_depth": group_cate_2,
+                        "sc_measurement": group_sc,
+                        "row_count": 0,
+                        "overall_count": 0,
+                        "topic_count": 0,
+                        "others_count": 0,
+                        "ambiguous_count": 0,
+                        "llm_used_count": 0,
+                    }
                 )
 
             classification_summaries.append(classification_summary)

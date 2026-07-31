@@ -218,6 +218,12 @@ def build_topic_pool_result(
         rule_profile=normalized_rule_profile,
         min_final_topics=min_final_topics,
         max_final_topics=max_final_topics,
+        compact_mode=bool(topic_pool_cfg.get("prompt_compact_mode", False)),
+        feature_hint_max_items=int(topic_pool_cfg.get("compact_feature_hint_max_items", 20)),
+        rule_term_max_items=int(topic_pool_cfg.get("compact_rule_term_max_items", 20)),
+        non_overall_example_max_items=int(
+            topic_pool_cfg.get("compact_non_overall_example_max_items", 6)
+        ),
     )
     raw_payload = llm_client.converse_json(
         system_prompt=messages[0]["content"],

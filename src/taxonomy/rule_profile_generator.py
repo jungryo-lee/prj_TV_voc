@@ -60,6 +60,9 @@ def get_rule_profile_prompt_memo_limit(
 def merge_category_seed_into_rule_profile_messages(
     messages: list[dict[str, str]],
     category_seed: dict[str, Any] | None,
+    *,
+    compact_mode: bool = False,
+    max_items: int = 20,
 ) -> list[dict[str, str]]:
     """Append category-seed guidance to the base rule-profile prompt."""
     if not category_seed:
@@ -80,7 +83,7 @@ def merge_category_seed_into_rule_profile_messages(
 
     if category_seed.get("static_feature_hint_terms"):
         seed_lines.append(
-            f"- static_feature_hint_terms: {category_seed['static_feature_hint_terms'][:25]}"
+            f"- static_feature_hint_terms: {category_seed['static_feature_hint_terms'][:max_items]}"
         )
 
     keys_to_merge = [
@@ -101,9 +104,11 @@ def merge_category_seed_into_rule_profile_messages(
     for key in keys_to_merge:
         values = category_seed.get(key)
         if values:
-            seed_lines.append(f"- {key}: {values[:20]}")
+            seed_lines.append(f"- {key}: {values[:max_items]}")
 
     merged = list(messages)
+    if compact_mode:
+        seed_lines.insert(1, "- Compact seed only; include only high-signal terms.")
     merged[0] = {
         **merged[0],
         "content": merged[0]["content"] + "\n" + "\n".join(seed_lines),
@@ -148,17 +153,24 @@ def build_rule_profile_result(
     sample_memos: list[str],
     category_seed: dict[str, Any],
     llm_client: DatabricksLLMClient,
+    config: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Build one normalized rule-profile result from sampled memos."""
+    rule_cfg = (config or {}).get("rule_profile", {}) or {}
+    compact_mode = bool(rule_cfg.get("prompt_compact_mode", False))
     messages = build_rule_profile_messages(
         cate_1_depth=cate_1_depth,
         cate_2_depth=cate_2_depth,
         sc_measurement=sc_measurement,
         sample_memos=sample_memos,
+        compact_mode=compact_mode,
+        feature_hint_max_items=int(rule_cfg.get("compact_feature_hint_max_items", 32)),
     )
     messages = merge_category_seed_into_rule_profile_messages(
         messages,
         category_seed=category_seed,
+        compact_mode=compact_mode,
+        max_items=int(rule_cfg.get("compact_seed_max_items", 12)),
     )
 
     raw_payload = llm_client.converse_json(
@@ -232,6 +244,7 @@ def generate_rule_profile_for_group(
         sample_memos=sample_memos,
         category_seed=category_seed,
         llm_client=client,
+        config=config,
     )
 
 

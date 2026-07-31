@@ -135,6 +135,9 @@ rule_profile:
   limit_group_count: null
   prompt_key: rule_profile_system
   output_json_schema: rule_profile_v1
+  prompt_compact_mode: true
+  compact_feature_hint_max_items: 32
+  compact_seed_max_items: 12
   max_prompt_memos_default: 200
   max_prompt_memos_by_model:
     sonnet_46: 200
@@ -144,6 +147,10 @@ topic_pool:
   enabled: true
   prompt_key: topic_pool_system
   output_json_schema: topic_pool_v1
+  prompt_compact_mode: true
+  compact_feature_hint_max_items: 20
+  compact_rule_term_max_items: 20
+  compact_non_overall_example_max_items: 6
   max_prompt_memos_default: 200
   max_prompt_memos_by_model:
     sonnet_46: 200
@@ -286,6 +293,7 @@ pipeline:
   overwrite_output: false
   save_failed_rows: true
   save_progress: true
+  run_sample_classification_in_design_batch: false
   max_failed_group_retries: 2
   require_human_review_for_new_category: true
   latest_flag_strategy: true

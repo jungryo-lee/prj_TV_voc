@@ -115,6 +115,8 @@ def generate_category_pattern_seed(
         cate_2_depth=cate_2_depth,
         sc_measurement=sc_measurement,
         sample_memos=sample_memos,
+        compact_mode=bool((config.get("rule_profile", {}) or {}).get("prompt_compact_mode", False)),
+        common_pattern_max_items=int((config.get("rule_profile", {}) or {}).get("compact_feature_hint_max_items", 32)),
     )
     raw_payload = client.converse_json(
         system_prompt=messages[0]["content"],
