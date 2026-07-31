@@ -10,6 +10,18 @@ from taxonomy.group_sampler import collect_diverse_topic_pool_prompt_memos
 from taxonomy.prompt_builder import build_topic_pool_messages, overall_topic_name
 
 
+def _is_retryable_json_error(error: Exception) -> bool:
+    """Return True for LLM responses that are worth retrying with a smaller prompt."""
+    message = repr(error)
+    retryable_markers = (
+        "LLM returned empty text",
+        "JSON parse failed",
+        "JSONDecodeError",
+        "cannot parse JSON",
+    )
+    return any(marker in message for marker in retryable_markers)
+
+
 def _clean_text(value: Any) -> str:
     """Collapse whitespace for stable downstream payloads."""
     return " ".join(str(value or "").split()).strip()
@@ -225,10 +237,71 @@ def build_topic_pool_result(
             topic_pool_cfg.get("compact_non_overall_example_max_items", 6)
         ),
     )
-    raw_payload = llm_client.converse_json(
-        system_prompt=messages[0]["content"],
-        user_prompt=messages[1]["content"],
-    )
+    llm_retry_stage = "primary"
+    try:
+        raw_payload = llm_client.converse_json(
+            system_prompt=messages[0]["content"],
+            user_prompt=messages[1]["content"],
+        )
+    except Exception as primary_error:
+        if not (
+            bool(topic_pool_cfg.get("emergency_retry_enabled", True))
+            and _is_retryable_json_error(primary_error)
+        ):
+            raise
+
+        print(
+            "[topic_pool_generator] primary JSON response failed; "
+            "retrying with emergency compact prompt | "
+            f"{cate_1_depth} / {cate_2_depth} / {sc_measurement}"
+        )
+        emergency_messages = build_topic_pool_messages(
+            cate_1_depth=cate_1_depth,
+            cate_2_depth=cate_2_depth,
+            sc_measurement=sc_measurement,
+            sample_memos=sample_memos,
+            rule_profile=normalized_rule_profile,
+            min_final_topics=min_final_topics,
+            max_final_topics=max_final_topics,
+            compact_mode=True,
+            emergency_mode=True,
+            feature_hint_max_items=int(
+                topic_pool_cfg.get("emergency_feature_hint_max_items", 10)
+            ),
+            rule_term_max_items=int(topic_pool_cfg.get("emergency_rule_term_max_items", 10)),
+            non_overall_example_max_items=int(
+                topic_pool_cfg.get("emergency_non_overall_example_max_items", 3)
+            ),
+        )
+        try:
+            raw_payload = llm_client.converse_json(
+                system_prompt=emergency_messages[0]["content"],
+                user_prompt=emergency_messages[1]["content"],
+            )
+            llm_retry_stage = "emergency_compact_prompt"
+        except Exception as emergency_error:
+            fallback_model_key = str(topic_pool_cfg.get("fallback_model_key") or "").strip()
+            can_use_fallback_model = (
+                bool(topic_pool_cfg.get("fallback_model_on_json_parse_error", True))
+                and fallback_model_key
+                and fallback_model_key != llm_client.model_key
+                and _is_retryable_json_error(emergency_error)
+            )
+            if not can_use_fallback_model:
+                raise emergency_error from primary_error
+
+            print(
+                "[topic_pool_generator] emergency prompt also failed; "
+                f"retrying with fallback model={fallback_model_key} | "
+                f"{cate_1_depth} / {cate_2_depth} / {sc_measurement}"
+            )
+            fallback_client = get_llm_client(config=config, model_key=fallback_model_key)
+            raw_payload = fallback_client.converse_json(
+                system_prompt=emergency_messages[0]["content"],
+                user_prompt=emergency_messages[1]["content"],
+            )
+            llm_retry_stage = f"fallback_model:{fallback_model_key}"
+
     normalized = normalize_topic_pool_output(
         raw_payload,
         overall_topic=normalized_rule_profile["overall_topic_name"],
@@ -260,6 +333,7 @@ def build_topic_pool_result(
             else len(sample_memos)
         ),
         "model_key": model_key or llm_client.model_key,
+        "llm_retry_stage": llm_retry_stage,
         "rule_profile_used": normalized_rule_profile,
         **normalized,
     }

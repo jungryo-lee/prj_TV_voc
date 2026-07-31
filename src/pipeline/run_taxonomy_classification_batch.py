@@ -519,6 +519,28 @@ def _clear_checkpoint_rows(
     )
 
 
+def _clear_failed_checkpoint_rows(
+    spark: SparkSession,
+    config: dict[str, Any],
+    *,
+    checkpoint_key: str,
+) -> None:
+    """Delete only failed/quarantined checkpoint rows so repaired groups can retry."""
+    table_name = get_log_table(config, "pipeline_progress")
+    if not spark.catalog.tableExists(table_name):
+        return
+
+    safe_key = checkpoint_key.replace("'", "''")
+    spark.sql(
+        f"""
+        DELETE FROM {table_name}
+        WHERE checkpoint_key = '{safe_key}'
+          AND pipeline_name = '{PIPELINE_NAME}'
+          AND status IN ('failed', 'skipped')
+        """
+    )
+
+
 def _clear_runtime_memory(spark: SparkSession) -> None:
     """Release Python and Spark-side cached memory between groups / at end."""
     spark.catalog.clearCache()
@@ -545,6 +567,7 @@ def run_taxonomy_classification_batch(
     source_period_start: str | None = None,
     source_period_end: str | None = None,
     resume_from_checkpoint: bool = True,
+    reset_failed_checkpoint_rows: bool | None = None,
     cleanup_checkpoint_on_success: bool = True,
     continue_on_group_failure: bool = False,
     print_progress: bool = True,
@@ -569,6 +592,11 @@ def run_taxonomy_classification_batch(
         else bool(pipeline_cfg.get("run_sample_classification_in_design_batch", True))
     )
     max_failed_group_retries = int(pipeline_cfg.get("max_failed_group_retries", 2))
+    resolved_reset_failed_checkpoint_rows = (
+        bool(reset_failed_checkpoint_rows)
+        if reset_failed_checkpoint_rows is not None
+        else bool(pipeline_cfg.get("reset_failed_checkpoint_rows", False))
+    )
     checkpoint_key = _checkpoint_key(
         model_key=model_key,
         prompt_version=prompt_version,
@@ -587,6 +615,18 @@ def run_taxonomy_classification_batch(
         cate_2_depth=cate_2_depth,
         sc_measurement=sc_measurement,
     )
+
+    if resume_from_checkpoint and resolved_reset_failed_checkpoint_rows:
+        _clear_failed_checkpoint_rows(
+            spark,
+            effective_config,
+            checkpoint_key=checkpoint_key,
+        )
+        if print_progress:
+            print(
+                f"[{PIPELINE_NAME}] reset failed/quarantined checkpoint rows | "
+                f"checkpoint_key={checkpoint_key}"
+            )
 
     completed_signatures = (
         _load_completed_signatures(
@@ -614,7 +654,8 @@ def run_taxonomy_classification_batch(
             f"completed_checkpoint_groups={len(completed_signatures)} | "
             f"failed_retry_groups={len(failed_retry_counts)} | "
             f"max_failed_group_retries={max_failed_group_retries} | "
-            f"run_sample_classification={resolved_run_sample_classification}"
+            f"run_sample_classification={resolved_run_sample_classification} | "
+            f"reset_failed_checkpoint_rows={resolved_reset_failed_checkpoint_rows}"
         )
 
     classification_summaries: list[dict[str, Any]] = []
@@ -1005,6 +1046,7 @@ def run_taxonomy_classification_batch(
         "failed_group_count": failed_group_count,
         "classification_count": len(classification_summaries),
         "model_key": model_key,
+        "reset_failed_checkpoint_rows": resolved_reset_failed_checkpoint_rows,
         "saved_tables": saved_tables,
         "target_groups": target_groups,
         "classification_summaries": classification_summaries,

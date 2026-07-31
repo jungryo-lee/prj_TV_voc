@@ -1047,38 +1047,83 @@ def build_topic_pool_messages(
     max_final_topics: int,
     *,
     compact_mode: bool = False,
+    emergency_mode: bool = False,
     feature_hint_max_items: int = 25,
     rule_term_max_items: int = 25,
     non_overall_example_max_items: int = 8,
 ) -> list[dict[str, str]]:
     """Build messages for topic-pool generation."""
     overall_name = overall_topic_name(sc_measurement)
+    effective_feature_hint_max_items = feature_hint_max_items
+    effective_rule_term_max_items = rule_term_max_items
+    effective_non_overall_example_max_items = non_overall_example_max_items
+    if emergency_mode:
+        effective_feature_hint_max_items = min(effective_feature_hint_max_items, 10)
+        effective_rule_term_max_items = min(effective_rule_term_max_items, 10)
+        effective_non_overall_example_max_items = min(
+            effective_non_overall_example_max_items,
+            3,
+        )
+
     feature_patterns = get_rule_profile_prompt_feature_hints(
         cate_1_depth,
         cate_2_depth,
-        max_items=feature_hint_max_items if compact_mode else 25,
+        max_items=effective_feature_hint_max_items if compact_mode else 25,
     )
 
     overall_allowed_rule = clean_text(rule_profile.get("overall_allowed_rule"))
     overall_block_rule = clean_text(rule_profile.get("overall_block_rule"))
     overall_sentiment_terms = _compact_prompt_terms(
         rule_profile.get("overall_sentiment_terms", []) or [],
-        max_items=min(15, rule_term_max_items) if compact_mode else 15,
+        max_items=min(15, effective_rule_term_max_items) if compact_mode else 15,
     )
     feature_hint_terms = _compact_prompt_terms(
         rule_profile.get("feature_hint_terms", []) or [],
-        max_items=rule_term_max_items if compact_mode else 25,
+        max_items=effective_rule_term_max_items if compact_mode else 25,
     )
     reason_signal_terms = _compact_prompt_terms(
         rule_profile.get("reason_signal_terms", []) or [],
-        max_items=rule_term_max_items if compact_mode else 25,
+        max_items=effective_rule_term_max_items if compact_mode else 25,
     )
     non_overall_examples = _compact_prompt_terms(
         rule_profile.get("non_overall_examples", []) or [],
-        max_items=non_overall_example_max_items if compact_mode else 8,
+        max_items=effective_non_overall_example_max_items if compact_mode else 8,
     )
 
-    if compact_mode:
+    if emergency_mode:
+        system = f"""
+You create stable VOC topic pools for TV review classification. Return valid JSON only.
+
+Category: {cate_1_depth} / {cate_2_depth} / {sc_label(sc_measurement)}
+Mandatory overall topic: {overall_name}
+Topic count: {int(min_final_topics)} to {int(max_final_topics)}
+
+Rules:
+- Include "{overall_name}" exactly once.
+- Use "{overall_name}" only when the memo has sentiment but no usable reason.
+- If a memo mentions a concrete feature, object, symptom, usage context, or reason, create/select a specific topic.
+- Topic labels must be concise Korean labels.
+- Merge synonyms and near-duplicates into one operational topic.
+
+Minimal guidance:
+- overall_allowed_rule: {overall_allowed_rule}
+- overall_block_rule: {overall_block_rule}
+- feature_hint_terms: {json.dumps(feature_hint_terms, ensure_ascii=False)}
+- reason_signal_terms: {json.dumps(reason_signal_terms, ensure_ascii=False)}
+- category_feature_hints: {json.dumps(feature_patterns, ensure_ascii=False)}
+
+JSON schema:
+{{
+  "topics": [
+    {{
+      "topic": "",
+      "description": "",
+      "representative_memos": [""]
+    }}
+  ]
+}}
+"""
+    elif compact_mode:
         system = f"""
 You are a VOC taxonomy designer for TV review topic classification.
 
