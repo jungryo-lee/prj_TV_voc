@@ -177,21 +177,21 @@ def _feature_label_map(input_pdf: pd.DataFrame) -> dict[str, str]:
 def _build_wide_frames(input_pdf: pd.DataFrame, group_dims: list[str]) -> tuple[pd.DataFrame, pd.DataFrame]:
     """Return wide score frame and entity metadata frame."""
     score_df = input_pdf.pivot_table(
-        index="entity_id",
+        index="model_id",
         columns="feature_name",
         values="avg_sc",
         aggfunc="mean",
     ).add_suffix("_score")
     count_df = input_pdf.pivot_table(
-        index="entity_id",
+        index="model_id",
         columns="feature_name",
         values="total_count",
         aggfunc="sum",
     ).add_suffix("_count")
     wide_df = pd.concat([score_df, count_df], axis=1).fillna(0)
 
-    meta_cols = ["entity_id", *[col for col in group_dims if col != "all" and col in input_pdf.columns]]
-    meta_df = input_pdf[meta_cols].drop_duplicates("entity_id").set_index("entity_id")
+    meta_cols = ["model_id", *[col for col in group_dims if col != "all" and col in input_pdf.columns]]
+    meta_df = input_pdf[meta_cols].drop_duplicates("model_id").set_index("model_id")
     return wide_df, meta_df
 
 
@@ -320,8 +320,8 @@ def run_weighted_regression(
                 if group_dim == "all":
                     group_pdf = wide_df.copy()
                 else:
-                    entity_ids = meta_df.index[meta_df[group_dim].astype(str) == group_key]
-                    group_pdf = wide_df.loc[wide_df.index.isin(entity_ids)].copy()
+                    model_ids = meta_df.index[meta_df[group_dim].astype(str) == group_key]
+                    group_pdf = wide_df.loc[wide_df.index.isin(model_ids)].copy()
 
                 if group_pdf.empty:
                     continue

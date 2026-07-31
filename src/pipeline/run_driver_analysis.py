@@ -2,8 +2,8 @@
 # MAGIC %md
 # MAGIC # 16. Driver Analysis - Weighted Correlation / WLS Regression
 # MAGIC
-# MAGIC Intellytics VOC 원천 데이터를 기준으로 Driver 분석용 입력 테이블을 만들고,
-# MAGIC weighted correlation 및 WLS regression 산출물을 생성합니다.
+# MAGIC Intellytics VOC 중 `Smart Features & User Experience (UX)` 하위 `cate_2_depth`를 대상으로,
+# MAGIC `country + year + brand_name + model` 조합 model_id 기준 weighted correlation 및 WLS regression 산출물을 생성합니다.
 
 # COMMAND ----------
 
@@ -74,8 +74,8 @@ display(
     spark.table(DRIVER_INPUT_TABLE)
     .groupBy("is_lifestyle", "cate_1_depth", "cate_2_depth")
     .agg(
-        F.count("*").alias("entity_category_rows"),
-        F.countDistinct("entity_id").alias("post_cnt"),
+        F.count("*").alias("model_category_rows"),
+        F.countDistinct("model_id").alias("model_cnt"),
         F.sum("total_count").alias("review_cnt"),
         F.avg("avg_sc").alias("avg_sc"),
     )

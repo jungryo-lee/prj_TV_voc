@@ -283,22 +283,22 @@ driver_analysis:
   apply_source_filters: false
   segment_col: is_lifestyle
   segment_values: ["Y", "N"]
-  entity_id_candidates:
-    - post_no
-    - model_id
-    - model_name
-    - product_model_name
-    - product_model
-    - sku
+  target_category_filters:
+    cate_1_depth: Smart Features & User Experience (UX)
+  model_id_strategy: composite
+  model_id_cols:
+    - country
+    - year
+    - brand_name
+    - model
   sentiment_col: sc_measurement
   sentiment_values: [-1, 0, 1]
   category_key_cols:
-    - cate_1_depth
     - cate_2_depth
   category_label_col: cate_2_depth
-  min_entity_category_count: 1
+  min_model_category_count: 1
   min_group_obs: 20
-  corr_threshold: 0.0
+  corr_threshold: 0.1
   pvalue_max: 0.1
   abs_coef_threshold: 0.1
   weight_method: sqrt_total_count
