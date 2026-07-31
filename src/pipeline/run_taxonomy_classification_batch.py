@@ -564,6 +564,7 @@ def run_taxonomy_classification_batch(
     save_topic_pool: bool = True,
     save_classification_detail: bool = True,
     run_sample_classification: bool | None = None,
+    sample_classification_model_key: str | None = None,
     source_period_start: str | None = None,
     source_period_end: str | None = None,
     resume_from_checkpoint: bool = True,
@@ -592,6 +593,11 @@ def run_taxonomy_classification_batch(
         else bool(pipeline_cfg.get("run_sample_classification_in_design_batch", True))
     )
     max_failed_group_retries = int(pipeline_cfg.get("max_failed_group_retries", 2))
+    resolved_sample_classification_model_key = (
+        str(sample_classification_model_key).strip()
+        if sample_classification_model_key
+        else str(pipeline_cfg.get("sample_classification_model_key") or model_key).strip()
+    )
     resolved_reset_failed_checkpoint_rows = (
         bool(reset_failed_checkpoint_rows)
         if reset_failed_checkpoint_rows is not None
@@ -655,6 +661,7 @@ def run_taxonomy_classification_batch(
             f"failed_retry_groups={len(failed_retry_counts)} | "
             f"max_failed_group_retries={max_failed_group_retries} | "
             f"run_sample_classification={resolved_run_sample_classification} | "
+            f"sample_classification_model_key={resolved_sample_classification_model_key} | "
             f"reset_failed_checkpoint_rows={resolved_reset_failed_checkpoint_rows}"
         )
 
@@ -697,7 +704,7 @@ def run_taxonomy_classification_batch(
                 cate_1_depth=group_cate_1,
                 cate_2_depth=group_cate_2,
                 sc_measurement=group_sc,
-                model_key=model_key,
+                model_key=resolved_sample_classification_model_key,
             )
             if resume_from_checkpoint and save_classification_detail
             else None
@@ -713,7 +720,7 @@ def run_taxonomy_classification_batch(
                 )
             continue
 
-        if signature in completed_signatures:
+        if signature in completed_signatures and not resolved_run_sample_classification:
             skipped_group_count += 1
             if print_progress:
                 print(
@@ -889,7 +896,10 @@ def run_taxonomy_classification_batch(
 
             if resolved_run_sample_classification:
                 if print_progress:
-                    print("  - classifying memos")
+                    print(
+                        "  - classifying memos | "
+                        f"model_key={resolved_sample_classification_model_key}"
+                    )
                 classification_result = classify_topic_for_group(
                     spark,
                     config=effective_config,
@@ -898,7 +908,7 @@ def run_taxonomy_classification_batch(
                     cate_1_depth=group_cate_1,
                     cate_2_depth=group_cate_2,
                     sc_measurement=group_sc,
-                    model_key=model_key,
+                    model_key=resolved_sample_classification_model_key,
                     max_rows=max_rows_per_group,
                     use_llm_fallback=use_llm_fallback,
                 )
@@ -913,7 +923,7 @@ def run_taxonomy_classification_batch(
                         spark=spark,
                         config=effective_config,
                         results=[classification_result],
-                        model_key=model_key,
+                        model_key=resolved_sample_classification_model_key,
                         write_mode="replace_groups",
                         source_period_start=source_period_start,
                         source_period_end=source_period_end,
@@ -1046,6 +1056,7 @@ def run_taxonomy_classification_batch(
         "failed_group_count": failed_group_count,
         "classification_count": len(classification_summaries),
         "model_key": model_key,
+        "sample_classification_model_key": resolved_sample_classification_model_key,
         "reset_failed_checkpoint_rows": resolved_reset_failed_checkpoint_rows,
         "saved_tables": saved_tables,
         "target_groups": target_groups,

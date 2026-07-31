@@ -47,6 +47,7 @@ SPECIAL_TOPICS = {
     "",
     "기타",
     "미분류",
+    "미분류(리뷰 100개미만)",
     "전반적 긍정",
     "전반적 부정",
     "LLM_FALLBACK_REQUIRED",

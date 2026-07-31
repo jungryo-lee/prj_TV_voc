@@ -316,11 +316,16 @@ insight:
   max_drivers_per_key_compact: 3
   max_diff_stats_full: 10
 
+final_classification:
+  low_volume_group_max_raw_rows: 100
+  low_volume_unclassified_topic: 미분류(리뷰 100개미만)
+
 pipeline:
   overwrite_output: false
   save_failed_rows: true
   save_progress: true
   run_sample_classification_in_design_batch: false
+  sample_classification_model_key: gpt_mini
   max_failed_group_retries: 2
   reset_failed_checkpoint_rows: false
   require_human_review_for_new_category: true

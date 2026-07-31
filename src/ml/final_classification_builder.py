@@ -24,6 +24,8 @@ MEMO_KEYS = GROUP_KEYS + ["memo_id"]
 FINAL_ACCEPT_STAGES = ["gpt_mini_fallback", "embedding_prototype_auto_accept"]
 PENDING_FALLBACK_STAGE = "embedding_prototype_llm_fallback"
 PENDING_FALLBACK_TOPIC = "LLM_FALLBACK_REQUIRED"
+LOW_VOLUME_CLASSIFICATION_STAGE = "low_volume_group_rule"
+LOW_VOLUME_TOPIC_TYPE = "unclassified"
 
 
 def _version_value(config: dict[str, Any], key: str, default: str = "") -> str:
@@ -160,7 +162,7 @@ def build_final_classification_detail_df(
         .drop("_final_rn")
     )
 
-    return selected_df.select(
+    selected_final_df = selected_df.select(
         F.col("memo_id").cast("string"),
         F.col("memo").cast("string"),
         F.col("memo_norm").cast("string"),
@@ -185,6 +187,106 @@ def build_final_classification_detail_df(
         F.lit(pipeline_version).cast("string").alias("pipeline_version"),
         F.lit(created_at).cast("string").alias("created_at"),
         F.lit(created_by).cast("string").alias("created_by"),
+    )
+
+    low_volume_df = build_low_volume_unclassified_detail_df(
+        spark,
+        config,
+        created_by=created_by,
+    )
+
+    low_volume_only_df = low_volume_df.join(
+        selected_final_df.select(*MEMO_KEYS).dropDuplicates(),
+        on=MEMO_KEYS,
+        how="left_anti",
+    )
+
+    return selected_final_df.unionByName(low_volume_only_df)
+
+
+def build_low_volume_unclassified_detail_df(
+    spark: SparkSession,
+    config: dict[str, Any],
+    *,
+    created_by: str = "final_classification_builder",
+) -> DataFrame:
+    """Create deterministic final rows for groups below the raw-row threshold."""
+    final_cfg = config.get("final_classification", {}) or {}
+    max_raw_rows = int(final_cfg.get("low_volume_group_max_raw_rows", 100))
+    topic_name = str(
+        final_cfg.get("low_volume_unclassified_topic", "미분류(리뷰 100개미만)")
+    )
+
+    raw_table = get_source_table(config, "raw_review_table")
+    raw_df = (
+        spark.table(raw_table)
+        .where(F.col("memo").isNotNull())
+        .where(F.length(F.trim(F.col("memo").cast("string"))) > 0)
+        .where(_build_source_filter_condition(config))
+        .withColumn("sc_measurement", F.col("sc_measurement").cast("int"))
+    )
+
+    target_sentiments = config.get("llm", {}).get("target_sentiments", []) or []
+    if target_sentiments:
+        raw_df = raw_df.where(F.col("sc_measurement").isin([int(v) for v in target_sentiments]))
+
+    raw_count_df = (
+        raw_df.groupBy(*GROUP_KEYS)
+        .agg(F.count("*").cast("long").alias("raw_group_rows"))
+        .where(F.col("raw_group_rows") < F.lit(max_raw_rows))
+    )
+
+    raw_with_id_df = with_memo_id(raw_df)
+    low_volume_raw_df = raw_with_id_df.join(raw_count_df, on=GROUP_KEYS, how="inner")
+
+    dedupe_window = Window.partitionBy(*MEMO_KEYS).orderBy(
+        F.length(F.col("memo").cast("string")).desc_nulls_last(),
+        F.col("memo").asc_nulls_last(),
+    )
+
+    created_at = datetime.utcnow().isoformat(timespec="seconds")
+    run_id = _runtime_value(config, "resolved_run_id")
+    run_date = _runtime_value(config, "resolved_run_date")
+    prompt_version = _version_value(config, "prompt_version")
+    taxonomy_version = _version_value(config, "taxonomy_version")
+    model_version = "rule_low_volume"
+    pipeline_version = _version_value(config, "pipeline_version")
+
+    return (
+        low_volume_raw_df.withColumn("_rn", F.row_number().over(dedupe_window))
+        .where(F.col("_rn") == 1)
+        .select(
+            F.col("memo_id").cast("string"),
+            F.col("memo").cast("string"),
+            F.col("memo_norm").cast("string"),
+            F.col("cate_1_depth").cast("string"),
+            F.col("cate_2_depth").cast("string"),
+            F.col("sc_measurement").cast("int"),
+            F.lit(topic_name).cast("string").alias("pred_topic"),
+            F.lit(LOW_VOLUME_TOPIC_TYPE).cast("string").alias("pred_topic_type"),
+            F.lit(LOW_VOLUME_CLASSIFICATION_STAGE).cast("string").alias(
+                "classification_stage"
+            ),
+            F.lit(1.0).cast("double").alias("confidence_score"),
+            F.lit(False).cast("boolean").alias("review_needed_yn"),
+            F.lit(False).cast("boolean").alias("llm_used_yn"),
+            F.concat(
+                F.lit("raw group rows < "),
+                F.lit(str(max_raw_rows)),
+                F.lit("; assigned deterministic low-volume unclassified label"),
+            ).cast("string").alias("match_reason"),
+            F.lit("[]").cast("string").alias("candidate_topics_json"),
+            F.lit(None).cast("string").alias("fallback_model_key"),
+            F.lit(None).cast("string").alias("fallback_model_version"),
+            F.lit(run_id).cast("string").alias("run_id"),
+            F.lit(run_date).cast("string").alias("run_date"),
+            F.lit(prompt_version).cast("string").alias("prompt_version"),
+            F.lit(taxonomy_version).cast("string").alias("taxonomy_version"),
+            F.lit(model_version).cast("string").alias("model_version"),
+            F.lit(pipeline_version).cast("string").alias("pipeline_version"),
+            F.lit(created_at).cast("string").alias("created_at"),
+            F.lit(created_by).cast("string").alias("created_by"),
+        )
     )
 
 
