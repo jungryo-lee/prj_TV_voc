@@ -75,7 +75,7 @@ display(
     .groupBy("is_lifestyle", "cate_1_depth", "cate_2_depth")
     .agg(
         F.count("*").alias("entity_category_rows"),
-        F.countDistinct("entity_id").alias("entity_cnt"),
+        F.countDistinct("entity_id").alias("post_cnt"),
         F.sum("total_count").alias("review_cnt"),
         F.avg("avg_sc").alias("avg_sc"),
     )

@@ -284,6 +284,7 @@ driver_analysis:
   segment_col: is_lifestyle
   segment_values: ["Y", "N"]
   entity_id_candidates:
+    - post_no
     - model_id
     - model_name
     - product_model_name
