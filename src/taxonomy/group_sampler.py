@@ -51,6 +51,7 @@ select
     memo
 from {source_table}
 where cate_1_depth not like '{exclude_prefix}%'
+  and sc_measurement is not null
   and sc_measurement in ({sentiments})
   and memo is not null
   and length(trim(memo)) > 0

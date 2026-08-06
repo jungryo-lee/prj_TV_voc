@@ -32,6 +32,7 @@ source:
   filters:
     raw_review_table:
       - is_lifestyle = 'N'
+      - sc_measurement IS NOT NULL
 
 reference:
   category_rule_table: sandbox.z_jungryo_lee.tv_voc_category_rule_master

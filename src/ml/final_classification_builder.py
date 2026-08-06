@@ -43,6 +43,14 @@ def _sql_escape(value: str) -> str:
     return str(value).replace("'", "''")
 
 
+def _target_sentiments(config: dict[str, Any]) -> list[int]:
+    """Return sentiment values eligible for topic classification/final output."""
+    taxonomy_cfg = config.get("taxonomy", {}) or {}
+    ml_cfg = config.get("ml_classification", {}) or {}
+    values = taxonomy_cfg.get("target_sentiments", ml_cfg.get("target_sentiments", [1, -1]))
+    return [int(value) for value in values]
+
+
 def _table_exists(spark: SparkSession, table_name: str) -> bool:
     """Return whether a Spark table exists."""
     try:
@@ -224,11 +232,12 @@ def build_low_volume_unclassified_detail_df(
         .where(F.length(F.trim(F.col("memo").cast("string"))) > 0)
         .where(_build_source_filter_condition(config))
         .withColumn("sc_measurement", F.col("sc_measurement").cast("int"))
+        .where(F.col("sc_measurement").isNotNull())
     )
 
-    target_sentiments = config.get("llm", {}).get("target_sentiments", []) or []
+    target_sentiments = _target_sentiments(config)
     if target_sentiments:
-        raw_df = raw_df.where(F.col("sc_measurement").isin([int(v) for v in target_sentiments]))
+        raw_df = raw_df.where(F.col("sc_measurement").isin(target_sentiments))
 
     raw_count_df = (
         raw_df.groupBy(*GROUP_KEYS)
