@@ -11,7 +11,7 @@ from pyspark.sql import functions as F
 from pyspark.sql import types as T
 from pyspark.sql.window import Window
 
-from common.config_loader import get_output_table
+from common.config_loader import get_output_table, get_source_table
 from common.llm_client import get_llm_client
 
 
@@ -676,10 +676,10 @@ def build_tableau_grouped_final_df(
     tableau_table_key: str = "classification_tableau_final",
     topic_group_table_key: str = "topic_group",
 ) -> DataFrame:
-    """Attach topic_group columns to the final Tableau classification table."""
+    """Build the final Tableau table with only raw columns plus final labels."""
     special_group_name = _cfg(config)["special_group_name"]
     tableau_table = get_output_table(config, tableau_table_key)
-    topic_group_table = get_output_table(config, topic_group_table_key)
+    raw_table = get_source_table(config, "raw_review_table")
 
     tableau_df = (
         spark.table(tableau_table)
@@ -716,8 +716,14 @@ def build_tableau_grouped_final_df(
         how="left",
     )
 
+    raw_columns = spark.table(raw_table).columns
+    passthrough_columns = [
+        F.col(f"t.`{col}`") for col in raw_columns if col not in {"memo_id", "topic_group", "pred_topic"}
+    ]
+
     return joined_df.select(
-        *[F.col(f"t.`{col}`") for col in tableau_df.columns],
+        *passthrough_columns,
+        F.col("t.memo_id").alias("memo_id"),
         F.when(
             F.col("t.pred_topic_type").isin("overall", "others", "llm_fallback")
             | F.col("t.pred_topic").isin(list(SPECIAL_TOPICS))
@@ -726,29 +732,7 @@ def build_tableau_grouped_final_df(
         )
         .otherwise(F.col("g.topic_group"))
         .alias("topic_group"),
-        F.when(
-            F.col("t.pred_topic_type").isin("overall", "others", "llm_fallback")
-            | F.col("t.pred_topic").isin(list(SPECIAL_TOPICS))
-            | F.col("g.topic_group").isNull(),
-            F.lit(999),
-        )
-        .otherwise(F.col("g.topic_group_order"))
-        .alias("topic_group_order"),
-        F.coalesce(
-            F.col("g.topic_group_description"),
-            F.lit("전반적/기타/미분류 또는 매핑되지 않은 주제"),
-        ).alias("topic_group_description"),
-        F.coalesce(F.col("g.grouping_reason"), F.lit("special_or_unmapped_topic")).alias(
-            "topic_grouping_reason"
-        ),
-        F.when(
-            F.col("t.pred_topic_type").isin("overall", "others", "llm_fallback")
-            | F.col("t.pred_topic").isin(list(SPECIAL_TOPICS))
-            | F.col("g.is_special_group").isNull(),
-            F.lit(True),
-        )
-        .otherwise(F.col("g.is_special_group"))
-        .alias("is_special_topic_group"),
+        F.col("t.pred_topic").alias("pred_topic"),
     )
 
 
@@ -765,16 +749,9 @@ def save_tableau_grouped_final(
     if write_mode == "overwrite":
         grouped_df.write.format("delta").mode("overwrite").option("overwriteSchema", "true").saveAsTable(table_name)
         return table_name
-    if write_mode == "replace_version" and spark.catalog.tableExists(table_name):
-        prompt_version = _version_value(config, "prompt_version").replace("'", "''")
-        taxonomy_version = _version_value(config, "taxonomy_version").replace("'", "''")
-        spark.sql(
-            f"""
-            DELETE FROM {table_name}
-            WHERE prompt_version = '{prompt_version}'
-              AND taxonomy_version = '{taxonomy_version}'
-            """
-        )
+    if write_mode == "replace_version":
+        grouped_df.write.format("delta").mode("overwrite").option("overwriteSchema", "true").saveAsTable(table_name)
+        return table_name
     grouped_df.write.format("delta").mode("append").option("mergeSchema", "true").saveAsTable(table_name)
     return table_name
 
