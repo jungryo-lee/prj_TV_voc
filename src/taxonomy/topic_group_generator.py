@@ -92,6 +92,23 @@ def _is_special_topic(topic: str) -> bool:
     return normalized in SPECIAL_TOPICS or normalized.startswith("전반적 ")
 
 
+def _resolve_topic_group_value(topic: Any, topic_group: Any, config: dict[str, Any]) -> str:
+    """Return a non-empty topic group, defaulting unmapped/special topics to 기타."""
+    special_group_name = _cfg(config)["special_group_name"]
+    normalized_topic = _clean_text(topic)
+    normalized_group = _clean_text(topic_group)
+    if _is_special_topic(normalized_topic) or not normalized_group:
+        return special_group_name
+    return normalized_group
+
+
+def _resolve_topic_group_order(topic: Any, topic_group: Any, topic_group_order: Any) -> int:
+    """Return stable ordering for topic groups, putting 기타-like groups last."""
+    if _is_special_topic(_clean_text(topic)) or not _clean_text(topic_group):
+        return 999
+    return int(topic_group_order or 999)
+
+
 def load_latest_topic_pool_for_group(
     spark: SparkSession,
     config: dict[str, Any],
@@ -366,6 +383,20 @@ def build_topic_group_rows(
         model_key = str(result.get("model_key") or _cfg(config)["model_key"])
         model_version = _model_version(config, model_key)
         for topic in result.get("topics") or []:
+            resolved_topic_group = _resolve_topic_group_value(
+                topic.get("topic"),
+                topic.get("topic_group"),
+                config,
+            )
+            resolved_topic_group_order = _resolve_topic_group_order(
+                topic.get("topic"),
+                topic.get("topic_group"),
+                topic.get("topic_group_order"),
+            )
+            resolved_is_special_group = bool(
+                topic.get("is_special_group", False)
+                or resolved_topic_group == _cfg(config)["special_group_name"]
+            )
             rows.append(
                 {
                     "cate_1_depth": _clean_text(result.get("cate_1_depth")),
@@ -374,13 +405,17 @@ def build_topic_group_rows(
                     "topic": _clean_text(topic.get("topic")),
                     "topic_description": _clean_text(topic.get("topic_description")),
                     "topic_order": int(topic.get("topic_order") or 0),
-                    "topic_group": _clean_text(topic.get("topic_group")),
-                    "topic_group_order": int(topic.get("topic_group_order") or 999),
-                    "topic_group_description": _clean_text(
-                        topic.get("topic_group_description")
+                    "topic_group": resolved_topic_group,
+                    "topic_group_order": resolved_topic_group_order,
+                    "topic_group_description": (
+                        _clean_text(topic.get("topic_group_description"))
+                        or "전반적/기타/미분류 또는 매핑되지 않은 주제"
                     ),
-                    "grouping_reason": _clean_text(topic.get("grouping_reason")),
-                    "is_special_group": bool(topic.get("is_special_group", False)),
+                    "grouping_reason": (
+                        _clean_text(topic.get("grouping_reason"))
+                        or "special_or_unmapped_topic"
+                    ),
+                    "is_special_group": resolved_is_special_group,
                     "run_id": run_id,
                     "run_date": run_date,
                     "pipeline_stage": pipeline_stage,
