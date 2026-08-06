@@ -89,6 +89,7 @@ def _cfg(config: dict[str, Any]) -> dict[str, Any]:
             "llm_fallback_queue_table_key", "llm_fallback_queue"
         ),
         "embedding_model": cfg.get("embedding_model", "databricks-bge-large-en"),
+        "taxonomy_design_model_key": cfg.get("taxonomy_design_model_key", "gpt_55"),
         "fallback_model_key": cfg.get("fallback_model_key", "gpt_mini"),
         "auto_accept_threshold": float(cfg.get("auto_accept_threshold", 0.80)),
         "llm_fallback_threshold": float(cfg.get("llm_fallback_threshold", 0.0)),
@@ -123,6 +124,11 @@ def _fallback_model_version(config: dict[str, Any], model_key: str) -> str:
         .get(model_key, {})
         .get("model_version", model_key)
     )
+
+
+def _taxonomy_design_model_key(config: dict[str, Any]) -> str:
+    """Resolve the model key used for rule_profile/topic_pool design artifacts."""
+    return str(_cfg(config).get("taxonomy_design_model_key") or "gpt_55")
 
 
 def _safe_json_loads(value: Any, default: Any) -> Any:
@@ -189,7 +195,7 @@ def _load_latest_rule_profile(
 ) -> dict[str, Any]:
     """Load the latest rule profile for one group."""
     table_name = get_output_table(config, "rule_profile")
-    model_key = (config.get("app", {}) or {}).get("model_key", "gpt_55")
+    model_key = _taxonomy_design_model_key(config)
     rows = (
         spark.table(table_name)
         .where(F.col("cate_1_depth") == cate_1_depth)
@@ -234,7 +240,7 @@ def _load_latest_topic_pool(
 ) -> dict[str, Any]:
     """Load the latest topic pool rows for one group."""
     table_name = get_output_table(config, "topic_pool")
-    model_key = (config.get("app", {}) or {}).get("model_key", "gpt_55")
+    model_key = _taxonomy_design_model_key(config)
     rows = (
         spark.table(table_name)
         .where(F.col("cate_1_depth") == cate_1_depth)

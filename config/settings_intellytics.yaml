@@ -267,6 +267,7 @@ ml_classification:
   output_table_key: ml_classification_detail
   llm_fallback_queue_table_key: llm_fallback_queue
   embedding_model: databricks-bge-large-en
+  taxonomy_design_model_key: gpt_55
   fallback_model_key: gpt_mini
   auto_accept_threshold: 0.80
   llm_fallback_threshold: 0.00
