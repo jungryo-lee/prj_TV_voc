@@ -131,6 +131,18 @@ taxonomy:
   max_final_topics: 17
   include_overall_category: true
   review_required_default: true
+  category_alias_rules:
+    - name: smart_features_additional_features
+      enabled: true
+      cate_1_depth: Smart Features & User Experience (UX)
+      source_cate_2_depths:
+        - Accessibility Features
+        - Ambient & Gallery Mode
+        - Multi View & Screen Split
+        - Program Guide (EPG)
+        - Recording & Utility Features
+      target_cate_2_depth: Accessibility Features
+      reason: cate_2_depth_kor 부가 기능 통합 운영
 
 rule_profile:
   enabled: true

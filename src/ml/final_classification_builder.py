@@ -14,6 +14,7 @@ from pyspark.sql import DataFrame, SparkSession
 from pyspark.sql import functions as F
 from pyspark.sql.window import Window
 
+from common.category_alias import apply_category_aliases
 from common.config_loader import get_output_table, get_source_filters, get_source_table
 from common.memo_id import with_memo_id
 from ml.topic_ml_classifier import ML_CLASSIFICATION_SCHEMA
@@ -234,6 +235,7 @@ def build_low_volume_unclassified_detail_df(
         .withColumn("sc_measurement", F.col("sc_measurement").cast("int"))
         .where(F.col("sc_measurement").isNotNull())
     )
+    raw_df = apply_category_aliases(raw_df, config)
 
     target_sentiments = _target_sentiments(config)
     if target_sentiments:
@@ -352,6 +354,7 @@ def build_tableau_final_df(
         .where(F.length(F.trim(F.col("memo").cast("string"))) > 0)
         .where(_build_source_filter_condition(config))
     )
+    raw_df = apply_category_aliases(raw_df, config)
     raw_with_id_df = with_memo_id(raw_df)
 
     final_detail_df = (

@@ -11,6 +11,7 @@ from pyspark.sql import DataFrame, SparkSession, types as T
 from pyspark.sql import functions as F
 from pyspark.sql.window import Window
 
+from common.category_alias import cate_2_alias_sql
 from common.config_loader import build_source_filter_sql, get_source_table, load_config
 from common.llm_client import get_llm_client
 from common.memo_id import with_memo_id
@@ -760,6 +761,7 @@ def build_classification_target_query(
     source_filter_sql = build_source_filter_sql(config, "raw_review_table")
     cate_1 = _sql_escape(cate_1_depth)
     cate_2 = _sql_escape(cate_2_depth)
+    cate_2_expr = cate_2_alias_sql(config)
 
     return f"""
 select
@@ -771,13 +773,26 @@ select
     brand_name,
     device_type,
     memo
-from {source_table}
+from (
+    select
+        cate_1_depth,
+        {cate_2_expr} as cate_2_depth,
+        sc_measurement,
+        year,
+        country,
+        brand_name,
+        device_type,
+        memo
+    from {source_table}
+    where memo is not null
+      and length(trim(memo)) > 0
+      {source_filter_sql}
+) src
 where cate_1_depth = '{cate_1}'
   and cate_2_depth = '{cate_2}'
   and sc_measurement = {int(sc_measurement)}
   and memo is not null
   and length(trim(memo)) > 0
-  {source_filter_sql}
 """.strip()
 
 

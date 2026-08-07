@@ -9,6 +9,7 @@ from pyspark.sql import DataFrame, SparkSession
 from pyspark.sql import functions as F
 from pyspark.sql.window import Window
 
+from common.category_alias import cate_2_alias_sql
 from common.config_loader import (
     build_source_filter_sql,
     get_output_table,
@@ -113,12 +114,13 @@ def load_raw_unclassified_memo_df(
     source_table = get_source_table(config, source_table_key)
     source_filter_sql = build_source_filter_sql(config, source_table_key)
     sentiments = ", ".join(str(int(value)) for value in cfg["target_sentiments"])
+    cate_2_expr = cate_2_alias_sql(config)
 
     raw_df = spark.sql(
         f"""
         select
             cate_1_depth,
-            cate_2_depth,
+            {cate_2_expr} as cate_2_depth,
             cast(sc_measurement as int) as sc_measurement,
             memo
         from {source_table}

@@ -7,6 +7,7 @@ from typing import Any
 from pyspark.sql import DataFrame, SparkSession, Window
 from pyspark.sql import functions as F
 
+from common.category_alias import cate_2_alias_sql
 from common.config_loader import build_source_filter_sql, get_source_table
 from common.memo_id import with_memo_id
 
@@ -42,11 +43,12 @@ def build_group_query(config: dict[str, Any]) -> str:
 
     exclude_prefix = _sql_escape(stage_cfg["exclude_category_prefix"])
     sentiments = ", ".join(str(int(v)) for v in stage_cfg["target_sentiments"])
+    cate_2_expr = cate_2_alias_sql(config)
 
     return f"""
 select
     cate_1_depth,
-    cate_2_depth,
+    {cate_2_expr} as cate_2_depth,
     sc_measurement,
     memo
 from {source_table}
@@ -110,6 +112,7 @@ def build_group_sample_query(
     source_filter_sql = build_source_filter_sql(config, "raw_review_table")
     cate_1 = _sql_escape(cate_1_depth)
     cate_2 = _sql_escape(cate_2_depth)
+    cate_2_expr = cate_2_alias_sql(config)
 
     return f"""
 select
@@ -121,13 +124,26 @@ select
     brand_name,
     device_type,
     memo
-from {source_table}
+from (
+    select
+        cate_1_depth,
+        {cate_2_expr} as cate_2_depth,
+        sc_measurement,
+        year,
+        country,
+        brand_name,
+        device_type,
+        memo
+    from {source_table}
+    where memo is not null
+      and length(trim(memo)) > 0
+      {source_filter_sql}
+) src
 where cate_1_depth = '{cate_1}'
   and cate_2_depth = '{cate_2}'
   and sc_measurement = {int(sc_measurement)}
   and memo is not null
   and length(trim(memo)) > 0
-  {source_filter_sql}
 """.strip()
 
 
