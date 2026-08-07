@@ -26,7 +26,8 @@ unity_catalog:
   schema: z_jungryo_lee
 
 source:
-  raw_review_table: sandbox.t_online_voc_analysis.intellytics_display_online_voc
+  raw_review_table: sandbox.t_online_voc_analysis.intellytics_display_online_voc_work
+  raw_mirror_table: sandbox.t_online_voc_analysis.intellytics_display_online_voc
   model_meta_table: sandbox.z_jungryo_lee.buzz_model_meta
   sentiment_source_table: sandbox.z_jungryo_lee.buzz_sc_score_dataset
   filters:
