@@ -718,12 +718,13 @@ def build_tableau_grouped_final_df(
 
     raw_columns = spark.table(raw_table).columns
     passthrough_columns = [
-        F.col(f"t.`{col}`") for col in raw_columns if col not in {"memo_id", "topic_group", "pred_topic"}
+        F.col(f"t.`{col}`")
+        for col in raw_columns
+        if col not in {"memo_id", "memo_norm", "topic_group", "pred_topic"}
     ]
 
     return joined_df.select(
         *passthrough_columns,
-        F.col("t.memo_id").alias("memo_id"),
         F.when(
             F.col("t.pred_topic_type").isin("overall", "others", "llm_fallback")
             | F.col("t.pred_topic").isin(list(SPECIAL_TOPICS))
