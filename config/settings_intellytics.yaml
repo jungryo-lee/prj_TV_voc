@@ -299,21 +299,32 @@ driver_analysis:
   enabled: false
   source_table_key: raw_review_table
   apply_source_filters: false
+  post_date_col: post_date
+  post_year_col: post_year
+  device_type_col: device_type
+  unified_device_type_col: unified_device_type
+  category_mapping_table_key: category_mapping_table
+  source_value_filters:
+    is_lifestyle: ["N"]
+    country_code: ["BR", "DE", "KR", "US", "UK"]
+    post_year: ["2024", "2025", "2026"]
+    brand_name: ["SAMSUNG", "LG", "TCL"]
+    unified_device_type: ["OLED", "UHD", "QNED/QLED/NANO"]
   segment_col: is_lifestyle
-  segment_values: ["Y", "N"]
+  segment_values: ["N"]
   target_category_filters:
     cate_1_depth: Smart Features & User Experience (UX)
   model_id_strategy: composite
   model_id_cols:
-    - country
-    - year
+    - country_code
+    - post_year
     - brand_name
     - model
   sentiment_col: sc_measurement
   sentiment_values: [-1, 0, 1]
   category_key_cols:
-    - cate_2_depth
-  category_label_col: cate_2_depth
+    - cate_2_depth_kor
+  category_label_col: cate_2_depth_kor
   min_model_category_count: 1
   min_group_obs: 20
   corr_threshold: 0.1
@@ -322,10 +333,10 @@ driver_analysis:
   weight_method: sqrt_total_count
   group_dims:
     - all
-    - country
+    - country_code
     - brand_name
-    - device_type
-    - year
+    - post_year
+    - unified_device_type
 
 insight:
   enabled: false

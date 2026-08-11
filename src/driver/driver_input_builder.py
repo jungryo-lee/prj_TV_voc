@@ -8,7 +8,12 @@ from typing import Any
 from pyspark.sql import DataFrame, SparkSession
 from pyspark.sql import functions as F
 
-from common.config_loader import get_output_table, get_source_filters, get_source_table
+from common.config_loader import (
+    get_output_table,
+    get_reference_table,
+    get_source_filters,
+    get_source_table,
+)
 
 
 def clean_feature_name(value: Any) -> str:
@@ -44,6 +49,118 @@ def _apply_driver_category_filters(df: DataFrame, driver_cfg: dict[str, Any]) ->
         else:
             df = df.where(F.col(col_name).cast("string") == F.lit(str(raw_value)))
     return df
+
+
+def _apply_driver_value_filters(df: DataFrame, driver_cfg: dict[str, Any]) -> DataFrame:
+    """Apply driver-analysis value filters such as country/year/brand/device."""
+    filters = driver_cfg.get("source_value_filters", {}) or {}
+    for col_name, raw_value in filters.items():
+        if raw_value is None or raw_value == "":
+            continue
+        if col_name not in df.columns:
+            raise ValueError(
+                f"Driver value filter column does not exist: {col_name}. "
+                f"available_columns={df.columns}"
+            )
+
+        values = raw_value if isinstance(raw_value, list) else [raw_value]
+        normalized_values = [str(value) for value in values]
+        df = df.where(F.col(col_name).cast("string").isin(normalized_values))
+    return df
+
+
+def _add_driver_derived_columns(df: DataFrame, driver_cfg: dict[str, Any]) -> DataFrame:
+    """Add derived columns used by driver analysis filters/groups."""
+    date_col = str(driver_cfg.get("post_date_col", "post_date"))
+    post_year_col = str(driver_cfg.get("post_year_col", "post_year"))
+    if date_col in df.columns and post_year_col not in df.columns:
+        date_as_string = F.col(date_col).cast("string")
+        df = df.withColumn(
+            post_year_col,
+            F.year(
+                F.coalesce(
+                    F.to_date(date_as_string),
+                    F.to_date(date_as_string, "yyyyMMdd"),
+                )
+            ).cast("string"),
+        )
+
+    device_col = str(driver_cfg.get("device_type_col", "device_type"))
+    unified_device_col = str(
+        driver_cfg.get("unified_device_type_col", "unified_device_type")
+    )
+    if device_col in df.columns and unified_device_col not in df.columns:
+        device = F.col(device_col).cast("string")
+        df = df.withColumn(
+            unified_device_col,
+            F.when(device == F.lit("OLED"), F.lit("OLED"))
+            .when(device == F.lit("UHD"), F.lit("UHD"))
+            .when(
+                device.isNotNull()
+                & (device != F.lit("-"))
+                & (device != F.lit("FHD/HD")),
+                F.lit("QNED/QLED/NANO"),
+            )
+            .otherwise(F.lit(None).cast("string")),
+        )
+
+    return df
+
+
+def _join_category_mapping(
+    df: DataFrame,
+    config: dict[str, Any],
+    driver_cfg: dict[str, Any],
+) -> DataFrame:
+    """Attach Korean category labels when requested by driver settings."""
+    category_key_cols = list(
+        driver_cfg.get("category_key_cols", []) or ["cate_1_depth", "cate_2_depth"]
+    )
+    category_label_col = str(driver_cfg.get("category_label_col", "cate_2_depth"))
+    needs_mapping = category_label_col.endswith("_kor") or any(
+        str(col).endswith("_kor") for col in category_key_cols
+    )
+    if not needs_mapping:
+        return df
+
+    mapping_table_key = str(
+        driver_cfg.get("category_mapping_table_key", "category_mapping_table")
+    )
+    mapping_table = get_reference_table(config, mapping_table_key)
+    mapping_df = (
+        df.sparkSession.table(mapping_table)
+        .select(
+            F.col("cate_1_depth").alias("_map_cate_1_depth"),
+            F.col("cate_2_depth").alias("_map_cate_2_depth"),
+            F.col("cate_1_depth_kor").alias("_map_cate_1_depth_kor"),
+            F.col("cate_2_depth_kor").alias("_map_cate_2_depth_kor"),
+        )
+        .dropDuplicates(["_map_cate_1_depth", "_map_cate_2_depth"])
+    )
+    joined_df = df.join(
+        mapping_df,
+        (F.col("cate_1_depth") == F.col("_map_cate_1_depth"))
+        & (F.col("cate_2_depth") == F.col("_map_cate_2_depth")),
+        how="left",
+    )
+
+    if "cate_1_depth_kor" not in joined_df.columns:
+        joined_df = joined_df.withColumn(
+            "cate_1_depth_kor",
+            F.coalesce(F.col("_map_cate_1_depth_kor"), F.col("cate_1_depth")),
+        )
+    if "cate_2_depth_kor" not in joined_df.columns:
+        joined_df = joined_df.withColumn(
+            "cate_2_depth_kor",
+            F.coalesce(F.col("_map_cate_2_depth_kor"), F.col("cate_2_depth")),
+        )
+
+    return joined_df.drop(
+        "_map_cate_1_depth",
+        "_map_cate_2_depth",
+        "_map_cate_1_depth_kor",
+        "_map_cate_2_depth_kor",
+    )
 
 
 def _model_id_expr(source_df: DataFrame, driver_cfg: dict[str, Any]):
@@ -98,7 +215,10 @@ def build_driver_input_df(
             config,
             resolved_source_key,
         )
+    source_df = _add_driver_derived_columns(source_df, driver_cfg)
     source_df = _apply_driver_category_filters(source_df, driver_cfg)
+    source_df = _join_category_mapping(source_df, config, driver_cfg)
+    source_df = _apply_driver_value_filters(source_df, driver_cfg)
 
     model_id_expr = _model_id_expr(source_df, driver_cfg)
     sentiment_col = str(driver_cfg.get("sentiment_col", "sc_measurement"))
