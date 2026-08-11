@@ -1,17 +1,17 @@
 # Databricks notebook source
 # MAGIC %md
-# MAGIC # 17. Non-Smart + Smart Additional Features Incremental Topic Batch
+# MAGIC # 17B. Non-Smart Incremental Topic Batch
 # MAGIC 
-# MAGIC 비스마트 카테고리 전체와 `Smart Features & User Experience (UX)` 중 `부가 기능` alias 그룹만 대상으로, 그룹별 최대 500개 memo_id 단위로 주제분류를 점진 실행합니다.
+# MAGIC 비스마트 카테고리 전체를 대상으로, 아직 최종 분류되지 않은 memo_id만 주제분류를 점진 실행합니다.
 # MAGIC 
 # MAGIC - 주제 설계: `gpt_55`로 rule profile / topic pool 생성 또는 기존 결과 재사용
 # MAGIC - 샘플 라벨: topic pool 기준 그룹별 100건을 `gpt_mini`로 분류
 # MAGIC - Prototype: 샘플 라벨 embedding 기반 topic prototype 생성
-# MAGIC - 전수/증분 분류: 아직 ML 분류되지 않은 memo_id 중 그룹별 최대 500건 분류
+# MAGIC - 전수/증분 분류: `classification_detail_final`에 아직 없는 memo_id 중 그룹별 최대 500건 분류
 # MAGIC - 저신뢰 fallback: GPT mini로 fallback queue 분류
-# MAGIC - 최종화: 해당 실행 scope만 final detail에 merge하고, topic group 생성
+# MAGIC - 최종화: 신규 memo_id만 final detail에 append하고, topic group 생성
 # MAGIC 
-# MAGIC `부가 기능` alias 그룹은 원본의 여러 `cate_2_depth`를 내부적으로 `Accessibility Features` 하나로 간주합니다. 기본값은 기존 성공분을 재사용하는 재시작 모드이며, 과거에 분리 생성된 부가 기능 결과를 지우고 다시 만들 때만 `RESET_SMART_ALIAS_GROUP = True`로 한 번 실행하세요.
+# MAGIC Smart Features 전수/부가 기능 alias 처리는 12.5번 노트북에서 담당합니다.
 
 # COMMAND ----------
 import sys
@@ -57,6 +57,7 @@ from ml.topic_ml_classifier import (
 )
 from ml.final_classification_builder import (
     build_final_classification_detail_df,
+    load_existing_final_keys,
     save_final_classification_detail,
 )
 from taxonomy.topic_group_generator import generate_and_save_topic_groups
@@ -75,21 +76,6 @@ print("ml_classification_detail =", get_output_table(config, "ml_classification_
 config = copy.deepcopy(base_config)
 
 EXCLUDED_CATE_1_DEPTHS = ["Smart Features & User Experience (UX)"]
-
-# Smart Features 중 예외적으로 포함할 부가 기능 alias 그룹입니다.
-SMART_ALIAS_CATE_1_DEPTH = "Smart Features & User Experience (UX)"
-SMART_ALIAS_TARGET_CATE_2_DEPTH = "Accessibility Features"
-SMART_ALIAS_SOURCE_CATE_2_DEPTHS = [
-    "Accessibility Features",
-    "Ambient & Gallery Mode",
-    "Multi View & Screen Split",
-    "Program Guide (EPG)",
-    "Recording & Utility Features",
-]
-
-# 과거에 부가 기능이 여러 cate_2_depth로 분리 저장된 산출물을 지우고 alias 기준으로 새로 만들 때만 True.
-# 한 번 정상 재처리된 뒤에는 False로 두면 끊긴 지점부터 이어갑니다.
-RESET_SMART_ALIAS_GROUP = False
 
 # 주제 생성용 원천 sample pool 상한입니다. 실제 prompt에는 아래 PROMPT_MEMO_ROWS만큼 diverse sample을 넣습니다.
 DESIGN_SAMPLE_POOL_ROWS = 500
@@ -126,39 +112,19 @@ LABEL_MODEL_VERSION = config["llm"]["models"][SAMPLE_LABEL_MODEL_KEY]["model_ver
 
 source_key = config["ml_classification"].get("source_table_key", "raw_review_table")
 escaped_excluded = ", ".join("'" + item.replace("'", "''") + "'" for item in EXCLUDED_CATE_1_DEPTHS)
-escaped_alias_sources = ", ".join("'" + item.replace("'", "''") + "'" for item in SMART_ALIAS_SOURCE_CATE_2_DEPTHS)
 sc_sql = "1, -1"
 
-# raw source filter: 비스마트 전체 + Smart Features의 부가 기능 alias 원천만 포함합니다.
+# raw source filter: 비스마트 전체만 포함합니다.
 scope_filter = f"""
 (
   cate_1_depth NOT IN ({escaped_excluded})
-  OR (
-    cate_1_depth = '{SMART_ALIAS_CATE_1_DEPTH}'
-    AND cate_2_depth IN ({escaped_alias_sources})
-  )
 )
 """.strip()
 
-# output table filter: 파이프라인 내부 alias 적용 후에는 부가 기능 그룹이 Accessibility Features로 저장됩니다.
+# output table filter: 비스마트 전체만 포함합니다.
 output_scope_sql = f"""
 (
   cate_1_depth NOT IN ({escaped_excluded})
-  OR (
-    cate_1_depth = '{SMART_ALIAS_CATE_1_DEPTH}'
-    AND cate_2_depth = '{SMART_ALIAS_TARGET_CATE_2_DEPTH}'
-  )
-)
-""".strip()
-
-# cleanup filter: 과거에 alias 적용 전 저장된 Smart 부가 기능 원천 cate_2 결과만 정리합니다. 비스마트는 삭제하지 않습니다.
-smart_alias_cleanup_sql = f"""
-(
-  cate_1_depth = '{SMART_ALIAS_CATE_1_DEPTH}'
-  AND (
-    cate_2_depth IN ({escaped_alias_sources})
-    OR cate_2_depth = '{SMART_ALIAS_TARGET_CATE_2_DEPTH}'
-  )
 )
 """.strip()
 
@@ -182,9 +148,6 @@ config.setdefault("app", {})["model_key"] = SAMPLE_LABEL_MODEL_KEY
 
 print({
     "excluded_cate_1_depths": EXCLUDED_CATE_1_DEPTHS,
-    "included_smart_alias_target": f"{SMART_ALIAS_CATE_1_DEPTH} / {SMART_ALIAS_TARGET_CATE_2_DEPTH}",
-    "included_smart_alias_sources": SMART_ALIAS_SOURCE_CATE_2_DEPTHS,
-    "reset_smart_alias_group": RESET_SMART_ALIAS_GROUP,
     "design_sample_pool_rows": DESIGN_SAMPLE_POOL_ROWS,
     "prompt_memo_rows": PROMPT_MEMO_ROWS,
     "sample_classification_rows_per_group": SAMPLE_CLASSIFICATION_ROWS_PER_GROUP,
@@ -207,46 +170,9 @@ final_detail_table = get_output_table(config, "classification_detail_final")
 topic_group_table = get_output_table(config, "topic_group")
 category_mapping_table = get_reference_table(config, "category_mapping_table")
 
-if RESET_SMART_ALIAS_GROUP:
-    print("[reset] Smart additional-features alias outputs will be deleted. Non-Smart outputs are not deleted.")
-    for table_key in [
-        "rule_profile",
-        "topic_pool",
-        "classification_detail",
-        "memo_embedding",
-        "memo_embedding_unclassified",
-        "topic_prototype",
-        "ml_classification_detail",
-        "llm_fallback_queue",
-        "classification_detail_final",
-        "topic_group",
-    ]:
-        table_name = get_output_table(config, table_key)
-        if spark.catalog.tableExists(table_name):
-            before_cnt = spark.sql(f"SELECT COUNT(*) AS cnt FROM {table_name} WHERE {smart_alias_cleanup_sql}").collect()[0]["cnt"]
-            spark.sql(f"DELETE FROM {table_name} WHERE {smart_alias_cleanup_sql}")
-            print(f"[reset] deleted {before_cnt} rows from {table_key}: {table_name}")
+print("[mode] Non-Smart incremental only. Existing final memo_ids will be reused and skipped.")
 
-    for log_key in ["pipeline_progress", "pipeline_failed"]:
-        try:
-            table_name = get_log_table(config, log_key)
-            if spark.catalog.tableExists(table_name):
-                before_cnt = spark.sql(f"SELECT COUNT(*) AS cnt FROM {table_name} WHERE {smart_alias_cleanup_sql}").collect()[0]["cnt"]
-                spark.sql(f"DELETE FROM {table_name} WHERE {smart_alias_cleanup_sql}")
-                print(f"[reset] deleted {before_cnt} rows from {log_key}: {table_name}")
-        except Exception as error:
-            print(f"[reset] skip log cleanup | {log_key} | {repr(error)}")
-else:
-    print("[reset] skipped. Existing successful rows will be reused where possible.")
-
-raw_alias_expr = f"""
-CASE
-  WHEN cate_1_depth = '{SMART_ALIAS_CATE_1_DEPTH}'
-   AND cate_2_depth IN ({escaped_alias_sources})
-  THEN '{SMART_ALIAS_TARGET_CATE_2_DEPTH}'
-  ELSE cate_2_depth
-END
-""".strip()
+raw_alias_expr = "cate_2_depth"
 
 status_sql = f"""
 WITH raw_group AS (
@@ -409,22 +335,29 @@ if RUN_11_5_EMBEDDING_AND_PROTOTYPE:
         min_topic_memo_count=config["topic_prototype"].get("min_topic_memo_count", 3),
     )
 
-    prototype_count = prototype_df.count()
     prototype_table = get_output_table(config, "topic_prototype")
-    if prototype_count > 0:
-        if spark.catalog.tableExists(prototype_table):
-            spark.sql(f"""
-            DELETE FROM {prototype_table}
-            WHERE prompt_version = '{PROMPT_VERSION}'
-              AND taxonomy_version = '{TAXONOMY_VERSION}'
-              AND model_version = '{LABEL_MODEL_VERSION}'
-              AND embedding_model = '{EMBEDDING_MODEL}'
-              AND {output_scope_sql}
-            """)
-            prototype_save_mode = "append"
-        else:
-            prototype_save_mode = "overwrite"
+    if spark.catalog.tableExists(prototype_table):
+        existing_prototype_groups = (
+            spark.table(prototype_table)
+            .where(F.col("prompt_version") == PROMPT_VERSION)
+            .where(F.col("taxonomy_version") == TAXONOMY_VERSION)
+            .where(F.col("model_version") == LABEL_MODEL_VERSION)
+            .where(F.col("embedding_model") == EMBEDDING_MODEL)
+            .where(F.expr(output_scope_sql))
+            .select("cate_1_depth", "cate_2_depth", "sc_measurement")
+            .dropDuplicates()
+        )
+        prototype_df = prototype_df.join(
+            existing_prototype_groups,
+            on=["cate_1_depth", "cate_2_depth", "sc_measurement"],
+            how="left_anti",
+        )
+        prototype_save_mode = "append"
+    else:
+        prototype_save_mode = "overwrite"
 
+    prototype_count = prototype_df.count()
+    if prototype_count > 0:
         prototype_saved_table = save_topic_prototypes(
             prototype_df,
             config,
@@ -436,7 +369,7 @@ if RUN_11_5_EMBEDDING_AND_PROTOTYPE:
 
     prototype_result = {
         "embedding_result": embedding_result,
-        "prototype_count": prototype_count,
+        "new_prototype_count": prototype_count,
         "prototype_table": prototype_saved_table,
     }
 else:
@@ -470,6 +403,13 @@ if RUN_GPT_MINI_FALLBACK:
     queue_df = (
         load_pending_llm_fallback_queue(spark, config, limit_rows=None)
         .where(F.expr(output_scope_sql))
+    )
+
+    final_done_keys = load_existing_final_keys(spark, config)
+    queue_df = queue_df.join(
+        final_done_keys,
+        on=["cate_1_depth", "cate_2_depth", "sc_measurement", "memo_id"],
+        how="left_anti",
     )
 
     existing_fallback_keys = (
@@ -522,8 +462,7 @@ fallback_result
 
 # COMMAND ----------
 # 5. 최종 detail 생성: ML auto accept + GPT mini fallback + 저용량 그룹 rule을 통합합니다.
-# 전체 버전을 replace하지 않고, 이번 실행 scope를 Delta MERGE로 update/insert합니다.
-# 과거 Smart 부가 기능 alias 분리 결과만 별도로 삭제합니다. 비스마트 결과는 삭제하지 않습니다.
+# 전체 버전을 replace하지 않고, 신규 memo_id만 append합니다.
 if RUN_13_FINALIZE:
     final_detail_df = build_final_classification_detail_df(
         spark,
@@ -536,51 +475,14 @@ if RUN_13_FINALIZE:
     final_detail_table = get_output_table(config, "classification_detail_final")
 
     if final_detail_rows > 0:
-        if spark.catalog.tableExists(final_detail_table):
-            alias_before_cnt = spark.sql(f"""
-            SELECT COUNT(*) AS cnt
-            FROM {final_detail_table}
-            WHERE prompt_version = '{PROMPT_VERSION}'
-              AND taxonomy_version = '{TAXONOMY_VERSION}'
-              AND {smart_alias_cleanup_sql}
-            """).collect()[0]["cnt"]
-            spark.sql(f"""
-            DELETE FROM {final_detail_table}
-            WHERE prompt_version = '{PROMPT_VERSION}'
-              AND taxonomy_version = '{TAXONOMY_VERSION}'
-              AND {smart_alias_cleanup_sql}
-            """)
-            print(f"[finalize] deleted existing Smart alias final rows={alias_before_cnt}")
-
-            final_detail_df.createOrReplaceTempView("_tmp_final_detail_updates")
-            merge_cols = final_detail_df.columns
-            set_sql = ",\n          ".join([f"t.`{col}` = s.`{col}`" for col in merge_cols])
-            insert_cols = ", ".join([f"`{col}`" for col in merge_cols])
-            insert_vals = ", ".join([f"s.`{col}`" for col in merge_cols])
-            spark.sql(f"""
-            MERGE INTO {final_detail_table} t
-            USING _tmp_final_detail_updates s
-            ON t.memo_id = s.memo_id
-               AND t.cate_1_depth = s.cate_1_depth
-               AND t.cate_2_depth = s.cate_2_depth
-               AND t.sc_measurement = s.sc_measurement
-               AND t.prompt_version = s.prompt_version
-               AND t.taxonomy_version = s.taxonomy_version
-            WHEN MATCHED THEN UPDATE SET
-              {set_sql}
-            WHEN NOT MATCHED THEN INSERT ({insert_cols})
-            VALUES ({insert_vals})
-            """)
-            final_saved_mode = "merge"
-        else:
-            final_detail_table = save_final_classification_detail(
-                spark,
-                config,
-                final_detail_df,
-                output_table_key="classification_detail_final",
-                write_mode="append",
-            )
-            final_saved_mode = "append_create"
+        final_detail_table = save_final_classification_detail(
+            spark,
+            config,
+            final_detail_df,
+            output_table_key="classification_detail_final",
+            write_mode="append_new_only",
+        )
+        final_saved_mode = "append_new_only"
     else:
         final_saved_mode = "no_rows"
 

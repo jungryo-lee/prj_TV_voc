@@ -17,6 +17,7 @@ from common.config_loader import (
 )
 from common.memo_id import with_memo_id
 from ml.memo_embedding import MEMO_EMBEDDING_SCHEMA, _align_embedding_schema_for_delta
+from ml.final_classification_builder import load_existing_final_keys
 
 
 GROUP_COLS = ["cate_1_depth", "cate_2_depth", "sc_measurement"]
@@ -32,6 +33,9 @@ def _cfg(config: dict[str, Any]) -> dict[str, Any]:
         "classification_table_key": ml_cfg.get(
             "classification_table_key", "classification_detail"
         ),
+        "final_classification_table_key": ml_cfg.get(
+            "final_classification_table_key", "classification_detail_final"
+        ),
         "prototype_table_key": ml_cfg.get("prototype_table_key", "topic_prototype"),
         "query_embedding_table_key": ml_cfg.get(
             "query_embedding_table_key", "memo_embedding_unclassified"
@@ -42,6 +46,9 @@ def _cfg(config: dict[str, Any]) -> dict[str, Any]:
         ),
         "exclude_existing_classification": bool(
             ml_cfg.get("exclude_existing_classification", True)
+        ),
+        "exclude_existing_final_classification": bool(
+            ml_cfg.get("exclude_existing_final_classification", True)
         ),
         "text_col": ml_cfg.get("text_col", "memo_norm"),
         "limit_rows": ml_cfg.get("limit_rows"),
@@ -61,7 +68,11 @@ def _runtime_value(config: dict[str, Any], key: str, default: str = "") -> str:
 
 def _classification_model_version(config: dict[str, Any]) -> str:
     """Resolve the LLM model version used by existing sample classifications."""
-    app_model_key = (config.get("app", {}) or {}).get("model_key", "gpt_55")
+    app_model_key = (
+        (config.get("ml_classification", {}) or {}).get("label_model_key")
+        or (config.get("pipeline", {}) or {}).get("sample_classification_model_key")
+        or (config.get("app", {}) or {}).get("model_key", "gpt_55")
+    )
     return str(
         ((config.get("llm", {}) or {}).get("models", {}) or {})
         .get(app_model_key, {})
@@ -108,7 +119,7 @@ def load_raw_unclassified_memo_df(
     limit_rows: int | None = None,
     limit_rows_per_group: int | None = None,
 ) -> DataFrame:
-    """Load one raw memo per memo_id that is not in existing classification_detail."""
+    """Load one raw memo per memo_id not already finalized/classified."""
     cfg = _cfg(config)
     source_table_key = cfg["source_table_key"]
     source_table = get_source_table(config, source_table_key)
@@ -133,6 +144,14 @@ def load_raw_unclassified_memo_df(
 
     completed_groups = load_completed_topic_groups(spark, config)
     raw_df = raw_df.join(completed_groups, on=GROUP_COLS, how="inner")
+
+    if cfg["exclude_existing_final_classification"]:
+        final_keys = load_existing_final_keys(
+            spark,
+            config,
+            table_key=cfg["final_classification_table_key"],
+        )
+        raw_df = raw_df.join(final_keys, on=GROUP_COLS + ["memo_id"], how="left_anti")
 
     if cfg["exclude_existing_classification"]:
         classified_table = get_output_table(config, cfg["classification_table_key"])

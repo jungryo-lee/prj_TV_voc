@@ -39,6 +39,21 @@ def _runtime_value(config: dict[str, Any], key: str, default: str = "") -> str:
     return str((config.get("runtime", {}) or {}).get(key, default) or default)
 
 
+def _label_model_version(config: dict[str, Any]) -> str:
+    """Resolve the model version that produced supervised/sample labels."""
+    model_key = (
+        (config.get("final_classification", {}) or {}).get("label_model_key")
+        or (config.get("ml_classification", {}) or {}).get("label_model_key")
+        or (config.get("pipeline", {}) or {}).get("sample_classification_model_key")
+        or (config.get("app", {}) or {}).get("model_key", "gpt_55")
+    )
+    return str(
+        ((config.get("llm", {}) or {}).get("models", {}) or {})
+        .get(model_key, {})
+        .get("model_version", _version_value(config, "model_version"))
+    )
+
+
 def _sql_escape(value: str) -> str:
     """Escape a value for SQL literal usage."""
     return str(value).replace("'", "''")
@@ -58,6 +73,53 @@ def _table_exists(spark: SparkSession, table_name: str) -> bool:
         return bool(spark.catalog.tableExists(table_name))
     except Exception:
         return False
+
+
+def load_existing_final_keys(
+    spark: SparkSession,
+    config: dict[str, Any],
+    *,
+    table_key: str = "classification_detail_final",
+    table_name: str | None = None,
+) -> DataFrame:
+    """Load memo_ids already finalized for the active taxonomy version.
+
+    This table is the pipeline's "do not classify again" registry. Once a
+    memo_id is present here, later design/ML/fallback batches should skip it
+    unless a separate human-review process intentionally changes the label.
+    """
+    resolved_table = table_name or get_output_table(config, table_key)
+    if not _table_exists(spark, resolved_table):
+        schema = "cate_1_depth string, cate_2_depth string, sc_measurement int, memo_id string"
+        return spark.createDataFrame([], schema)
+
+    return (
+        spark.table(resolved_table)
+        .where(F.col("prompt_version") == _version_value(config, "prompt_version"))
+        .where(F.col("taxonomy_version") == _version_value(config, "taxonomy_version"))
+        .select(
+            F.col("cate_1_depth").cast("string"),
+            F.col("cate_2_depth").cast("string"),
+            F.col("sc_measurement").cast("int"),
+            F.col("memo_id").cast("string"),
+        )
+        .dropDuplicates()
+    )
+
+
+def exclude_existing_final_memo_ids(
+    df: DataFrame,
+    config: dict[str, Any],
+    *,
+    table_key: str = "classification_detail_final",
+) -> DataFrame:
+    """Remove rows whose memo_id already has a final label."""
+    existing_keys = load_existing_final_keys(
+        df.sparkSession,
+        config,
+        table_key=table_key,
+    )
+    return df.join(existing_keys, on=MEMO_KEYS, how="left_anti")
 
 
 def _delete_active_version_rows(
@@ -92,6 +154,68 @@ def load_ml_classification_df(
         spark.table(table_name)
         .where(F.col("prompt_version") == _version_value(config, "prompt_version"))
         .where(F.col("taxonomy_version") == _version_value(config, "taxonomy_version"))
+    )
+
+
+def load_sample_classification_final_candidate_df(
+    spark: SparkSession,
+    config: dict[str, Any],
+    *,
+    input_table_key: str = "classification_detail",
+    created_by: str = "final_classification_builder",
+) -> DataFrame:
+    """Load sample LLM labels as final candidates.
+
+    These rows are high-cost LLM labels already produced during taxonomy design.
+    If a memo_id has no later ML/GPT-mini fallback result, preserving the sample
+    label in final prevents unnecessary reclassification.
+    """
+    table_name = get_output_table(config, input_table_key)
+    if not _table_exists(spark, table_name):
+        return spark.createDataFrame([], ML_CLASSIFICATION_SCHEMA)
+
+    created_at = datetime.utcnow().isoformat(timespec="seconds")
+    run_id = _runtime_value(config, "resolved_run_id")
+    run_date = _runtime_value(config, "resolved_run_date")
+    pipeline_version = _version_value(config, "pipeline_version")
+
+    base_df = (
+        spark.table(table_name)
+        .where(F.col("prompt_version") == _version_value(config, "prompt_version"))
+        .where(F.col("taxonomy_version") == _version_value(config, "taxonomy_version"))
+        .where(F.col("model_version") == _label_model_version(config))
+        .where(F.col("memo_id").isNotNull())
+        .where(F.col("pred_topic").isNotNull())
+        .where(F.col("pred_topic") != PENDING_FALLBACK_TOPIC)
+    )
+    if "is_latest" in base_df.columns:
+        base_df = base_df.where(F.coalesce(F.col("is_latest"), F.lit(True)) == F.lit(True))
+
+    return base_df.select(
+        F.col("memo_id").cast("string"),
+        F.col("memo").cast("string"),
+        F.col("memo_norm").cast("string"),
+        F.col("cate_1_depth").cast("string"),
+        F.col("cate_2_depth").cast("string"),
+        F.col("sc_measurement").cast("int"),
+        F.col("pred_topic").cast("string"),
+        F.col("pred_topic_type").cast("string"),
+        F.col("classification_stage").cast("string"),
+        F.col("confidence_score").cast("double"),
+        F.coalesce(F.col("review_needed_yn"), F.lit(False)).cast("boolean").alias("review_needed_yn"),
+        F.coalesce(F.col("llm_used_yn"), F.lit(True)).cast("boolean").alias("llm_used_yn"),
+        F.col("match_reason").cast("string"),
+        F.col("candidate_topics_json").cast("string"),
+        F.lit(None).cast("string").alias("fallback_model_key"),
+        F.lit(None).cast("string").alias("fallback_model_version"),
+        F.coalesce(F.col("run_id"), F.lit(run_id)).cast("string").alias("run_id"),
+        F.coalesce(F.col("run_date"), F.lit(run_date)).cast("string").alias("run_date"),
+        F.col("prompt_version").cast("string"),
+        F.col("taxonomy_version").cast("string"),
+        F.col("model_version").cast("string"),
+        F.lit(pipeline_version).cast("string").alias("pipeline_version"),
+        F.lit(created_at).cast("string").alias("created_at"),
+        F.lit(created_by).cast("string").alias("created_by"),
     )
 
 
@@ -139,6 +263,8 @@ def build_final_classification_detail_df(
     *,
     input_table_key: str = "ml_classification_detail",
     created_by: str = "final_classification_builder",
+    exclude_existing_final: bool = True,
+    include_sample_classification: bool | None = None,
 ) -> DataFrame:
     """Pick one final classification row per group/memo_id.
 
@@ -198,6 +324,25 @@ def build_final_classification_detail_df(
         F.lit(created_by).cast("string").alias("created_by"),
     )
 
+    final_cfg = config.get("final_classification", {}) or {}
+    resolved_include_sample = (
+        bool(final_cfg.get("include_sample_classification", True))
+        if include_sample_classification is None
+        else bool(include_sample_classification)
+    )
+    if resolved_include_sample:
+        sample_final_df = load_sample_classification_final_candidate_df(
+            spark,
+            config,
+            created_by=created_by,
+        )
+        sample_only_df = sample_final_df.join(
+            selected_final_df.select(*MEMO_KEYS).dropDuplicates(),
+            on=MEMO_KEYS,
+            how="left_anti",
+        )
+        selected_final_df = selected_final_df.unionByName(sample_only_df)
+
     low_volume_df = build_low_volume_unclassified_detail_df(
         spark,
         config,
@@ -210,7 +355,11 @@ def build_final_classification_detail_df(
         how="left_anti",
     )
 
-    return selected_final_df.unionByName(low_volume_only_df)
+    output_df = selected_final_df.unionByName(low_volume_only_df)
+    if exclude_existing_final:
+        output_df = exclude_existing_final_memo_ids(output_df, config)
+
+    return output_df
 
 
 def build_low_volume_unclassified_detail_df(
@@ -307,7 +456,7 @@ def save_final_classification_detail(
     final_detail_df: DataFrame,
     *,
     output_table_key: str = "classification_detail_final",
-    write_mode: str = "replace_version",
+    write_mode: str = "append_new_only",
 ) -> str:
     """Save memo_id-level final classification detail."""
     table_name = get_output_table(config, output_table_key)
@@ -320,6 +469,17 @@ def save_final_classification_detail(
         return table_name
     if write_mode == "replace_version":
         _delete_active_version_rows(spark, table_name, config)
+        write_df.write.format("delta").mode("append").option("mergeSchema", "true").saveAsTable(table_name)
+        return table_name
+    if write_mode == "append_new_only":
+        if _table_exists(spark, table_name):
+            write_df = exclude_existing_final_memo_ids(
+                write_df,
+                config,
+                table_key=output_table_key,
+            )
+        if write_df.limit(1).count() == 0:
+            return table_name
         write_df.write.format("delta").mode("append").option("mergeSchema", "true").saveAsTable(table_name)
         return table_name
     if write_mode == "append":
@@ -435,7 +595,7 @@ def build_and_save_final_classification_outputs(
     input_table_key: str = "ml_classification_detail",
     final_detail_table_key: str = "classification_detail_final",
     tableau_table_key: str = "classification_tableau_final",
-    write_mode: str = "replace_version",
+    write_mode: str = "append_new_only",
 ) -> dict[str, Any]:
     """Build and save both final memo-level and Tableau-ready raw-row outputs."""
     print("[final_classification] validating stage-12 result")

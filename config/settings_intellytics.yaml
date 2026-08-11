@@ -252,12 +252,13 @@ classification:
 
 memo_embedding:
   enabled: true
-  input_table_key: classification_detail
+  input_table_key: classification_detail_final
   output_table_key: memo_embedding
   embedding_model: databricks-bge-large-en
   model_path: /Volumes/sandbox/z_jungryo_lee/tv_voc/bge-large-en-v1.5
   batch_size: 64
   heuristic_label_min_confidence_score: 0.6
+  ml_auto_label_min_confidence_score: 0.9
   include_pred_topic_types: [topic, overall]
   exclude_review_needed: true
   text_col: memo_norm
@@ -280,6 +281,7 @@ ml_classification:
   prototype_table_key: topic_prototype
   output_table_key: ml_classification_detail
   llm_fallback_queue_table_key: llm_fallback_queue
+  final_classification_table_key: classification_detail_final
   embedding_model: databricks-bge-large-en
   taxonomy_design_model_key: gpt_55
   fallback_model_key: gpt_mini
@@ -287,6 +289,7 @@ ml_classification:
   llm_fallback_threshold: 0.00
   min_prototype_memo_count: 3
   exclude_existing_classification: true
+  exclude_existing_final_classification: true
   target_sentiments: [1, -1]
   text_col: memo_norm
   limit_rows: null
@@ -332,6 +335,7 @@ insight:
   max_diff_stats_full: 10
 
 final_classification:
+  include_sample_classification: true
   low_volume_group_max_raw_rows: 100
   low_volume_unclassified_topic: 미분류(리뷰 100개미만)
 

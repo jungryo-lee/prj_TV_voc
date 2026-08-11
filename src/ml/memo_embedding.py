@@ -51,7 +51,7 @@ def _embedding_cfg(config: dict[str, Any]) -> dict[str, Any]:
     cfg = config.get("memo_embedding", {}) or {}
     path_cfg = config.get("path", {}) or {}
     return {
-        "input_table_key": cfg.get("input_table_key", "classification_detail"),
+        "input_table_key": cfg.get("input_table_key", "classification_detail_final"),
         "output_table_key": cfg.get("output_table_key", "memo_embedding"),
         "embedding_model": cfg.get("embedding_model", "databricks-bge-large-en"),
         "model_path": (
@@ -65,6 +65,9 @@ def _embedding_cfg(config: dict[str, Any]) -> dict[str, Any]:
                 "heuristic_label_min_confidence_score",
                 cfg.get("label_min_confidence_score", 0.6),
             )
+        ),
+        "ml_auto_label_min_confidence_score": float(
+            cfg.get("ml_auto_label_min_confidence_score", 0.9)
         ),
         "include_pred_topic_types": list(
             cfg.get("include_pred_topic_types", ["topic", "overall"])
@@ -82,6 +85,21 @@ def _version_value(config: dict[str, Any], key: str, default: str = "") -> str:
 def _runtime_value(config: dict[str, Any], key: str, default: str = "") -> str:
     """Read resolved runtime metadata with a safe fallback."""
     return str(config.get("runtime", {}).get(key, default) or default)
+
+
+def _classification_model_version(config: dict[str, Any]) -> str:
+    """Resolve the model version that produced supervised topic labels."""
+    model_key = (
+        (config.get("memo_embedding", {}) or {}).get("label_model_key")
+        or (config.get("ml_classification", {}) or {}).get("label_model_key")
+        or (config.get("pipeline", {}) or {}).get("sample_classification_model_key")
+        or (config.get("app", {}) or {}).get("model_key", "gpt_55")
+    )
+    return str(
+        ((config.get("llm", {}) or {}).get("models", {}) or {})
+        .get(model_key, {})
+        .get("model_version", _version_value(config, "model_version"))
+    )
 
 
 def _table_exists(spark: SparkSession, table_name: str) -> bool:
@@ -121,36 +139,58 @@ def _align_embedding_schema_for_delta(
     return aligned_df
 
 
-def _trusted_label_condition(min_confidence_score: float) -> F.Column:
+def _trusted_label_condition(
+    min_confidence_score: float,
+    *,
+    ml_auto_min_confidence_score: float = 0.9,
+) -> F.Column:
     """Return stage-aware condition for embedding label inclusion.
 
-    LLM fallback rows currently have NULL confidence_score because the LLM does
-    not return a calibrated probability. Those rows can still be useful as
-    supervised labels when they are not marked for review and are not `others`.
-    Heuristic matches, on the other hand, use a numeric matching score, so the
-    threshold is applied only to score-bearing stages.
+    Operational teacher labels are intentionally conservative:
+    - sample LLM labels produced during taxonomy design
+    - GPT-mini fallback labels
+    - prototype ML labels only when confidence is high enough
+
+    This prevents low-confidence auto labels from being fed back into the
+    prototype model and amplifying early classification errors.
     """
     stage_col = F.coalesce(F.col("classification_stage"), F.lit(""))
     confidence_col = F.coalesce(F.col("confidence_score"), F.lit(0.0))
+    llm_used_col = F.coalesce(F.col("llm_used_yn"), F.lit(False))
 
-    include_without_score = stage_col.isin(
+    sample_llm_label = (
+        llm_used_col
+        & stage_col.isin(
+            "llm_fallback",
+            "llm_reason_recovered",
+            "sample_llm_fallback",
+            "sample_gpt_mini_fallback",
+        )
+    )
+    gpt_mini_fallback_label = stage_col.isin(
+        "gpt_mini_fallback",
         "llm_fallback",
         "llm_reason_recovered",
-        "rule_overall",
-        "rule_overall_target_sentiment",
     )
-    include_with_score = (
-        stage_col.isin(
-            "heuristic_topic_match",
-            "ambiguous_candidate_match",
-            "forced_others",
-            "rule_non_overall",
-            "rule_overall_blocked",
-        )
+    high_confidence_ml_label = (
+        (stage_col == F.lit("embedding_prototype_auto_accept"))
+        & (confidence_col >= float(ml_auto_min_confidence_score))
+    )
+
+    # Backward-compatible scored sample labels are allowed only at the old
+    # heuristic threshold. Operational ML labels use the stricter 0.9 threshold.
+    legacy_scored_sample_label = (
+        stage_col.isin("heuristic_topic_match", "ambiguous_candidate_match")
+        & llm_used_col
         & (confidence_col >= float(min_confidence_score))
     )
 
-    return include_without_score | include_with_score
+    return (
+        sample_llm_label
+        | gpt_mini_fallback_label
+        | high_confidence_ml_label
+        | legacy_scored_sample_label
+    )
 
 
 def load_labeled_memo_df(
@@ -176,12 +216,7 @@ def load_labeled_memo_df(
     table_name = get_output_table(config, resolved_input_key)
     resolved_prompt_version = prompt_version or _version_value(config, "prompt_version")
     resolved_taxonomy_version = taxonomy_version or _version_value(config, "taxonomy_version")
-    resolved_model_version = model_version or str(
-        config.get("llm", {})
-        .get("models", {})
-        .get(config.get("app", {}).get("model_key", "gpt_55"), {})
-        .get("model_version", _version_value(config, "model_version"))
-    )
+    resolved_model_version = model_version or _classification_model_version(config)
     resolved_topic_types = list(include_pred_topic_types or cfg["include_pred_topic_types"])
     resolved_min_confidence = (
         cfg["label_min_confidence_score"]
@@ -203,7 +238,12 @@ def load_labeled_memo_df(
         .where(F.col("pred_topic").isNotNull())
         .where(F.col("pred_topic") != "기타")
         .where(F.col("pred_topic_type").isin(resolved_topic_types))
-        .where(_trusted_label_condition(resolved_min_confidence))
+        .where(
+            _trusted_label_condition(
+                resolved_min_confidence,
+                ml_auto_min_confidence_score=cfg["ml_auto_label_min_confidence_score"],
+            )
+        )
     )
 
     if "is_latest" in base_df.columns:
@@ -253,6 +293,8 @@ def filter_unembedded_memo_df(
             "cate_2_depth",
             "sc_measurement",
             "memo_id",
+            "pred_topic",
+            "pred_topic_type",
             "prompt_version",
             "taxonomy_version",
             "model_version",
@@ -265,6 +307,8 @@ def filter_unembedded_memo_df(
         "cate_2_depth",
         "sc_measurement",
         "memo_id",
+        "pred_topic",
+        "pred_topic_type",
         "prompt_version",
         "taxonomy_version",
         "model_version",

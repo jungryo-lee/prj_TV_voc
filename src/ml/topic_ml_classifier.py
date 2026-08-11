@@ -9,6 +9,7 @@ from typing import Any
 from pyspark.sql import DataFrame, SparkSession
 from pyspark.sql import functions as F
 from pyspark.sql import types as T
+from pyspark.sql.window import Window
 
 from common.config_loader import get_output_table
 from ml.topic_prototype import classify_by_topic_prototype
@@ -109,7 +110,11 @@ def _runtime_value(config: dict[str, Any], key: str, default: str = "") -> str:
 
 def _classification_model_version(config: dict[str, Any]) -> str:
     """Resolve the LLM model version used by existing sample classifications."""
-    app_model_key = (config.get("app", {}) or {}).get("model_key", "gpt_55")
+    app_model_key = (
+        (config.get("ml_classification", {}) or {}).get("label_model_key")
+        or (config.get("pipeline", {}) or {}).get("sample_classification_model_key")
+        or (config.get("app", {}) or {}).get("model_key", "gpt_55")
+    )
     return str(
         ((config.get("llm", {}) or {}).get("models", {}) or {})
         .get(app_model_key, {})
@@ -148,6 +153,32 @@ def _table_exists(spark: SparkSession, table_name: str) -> bool:
         return True
     except Exception:
         return False
+
+
+def _load_existing_final_keys(
+    spark: SparkSession,
+    config: dict[str, Any],
+) -> DataFrame:
+    """Load finalized memo_ids for active prompt/taxonomy version."""
+    cfg = config.get("ml_classification", {}) or {}
+    table_key = cfg.get("final_classification_table_key", "classification_detail_final")
+    table_name = get_output_table(config, table_key)
+    if not _table_exists(spark, table_name):
+        schema = "cate_1_depth string, cate_2_depth string, sc_measurement int, memo_id string"
+        return spark.createDataFrame([], schema)
+
+    return (
+        spark.table(table_name)
+        .where(F.col("prompt_version") == _version_value(config, "prompt_version"))
+        .where(F.col("taxonomy_version") == _version_value(config, "taxonomy_version"))
+        .select(
+            F.col("cate_1_depth").cast("string"),
+            F.col("cate_2_depth").cast("string"),
+            F.col("sc_measurement").cast("int"),
+            F.col("memo_id").cast("string"),
+        )
+        .dropDuplicates()
+    )
 
 
 def _align_df_to_existing_delta_schema(df: DataFrame, table_name: str) -> DataFrame:
@@ -307,13 +338,30 @@ def load_topic_prototype_df(
     cfg = _cfg(config)
     table_name = get_output_table(config, prototype_table_key or cfg["prototype_table_key"])
     resolved_embedding_model = embedding_model or cfg["embedding_model"]
-    return (
+    df = (
         spark.table(table_name)
         .where(F.col("embedding_model") == resolved_embedding_model)
         .where(F.col("prompt_version") == _version_value(config, "prompt_version"))
         .where(F.col("taxonomy_version") == _version_value(config, "taxonomy_version"))
         .where(F.col("model_version") == _classification_model_version(config))
         .where(F.col("prototype_embedding").isNotNull())
+    )
+    latest_window = Window.partitionBy(
+        "cate_1_depth",
+        "cate_2_depth",
+        "sc_measurement",
+        "pred_topic",
+        "pred_topic_type",
+        "prompt_version",
+        "taxonomy_version",
+        "model_version",
+        "embedding_model",
+    ).orderBy(F.col("created_at").desc_nulls_last())
+
+    return (
+        df.withColumn("_prototype_rn", F.row_number().over(latest_window))
+        .where(F.col("_prototype_rn") == 1)
+        .drop("_prototype_rn")
     )
 
 
@@ -326,6 +374,11 @@ def filter_existing_ml_classification(
 ) -> DataFrame:
     """Skip query embeddings already classified by this ML stage."""
     cfg = _cfg(config)
+    ml_cfg = config.get("ml_classification", {}) or {}
+    if bool(ml_cfg.get("exclude_existing_final_classification", True)):
+        final_keys = _load_existing_final_keys(spark, config)
+        query_df = query_df.join(final_keys, on=GROUP_COLS + ["memo_id"], how="left_anti")
+
     table_name = get_output_table(config, output_table_key or cfg["output_table_key"])
     if not _table_exists(spark, table_name):
         return query_df
@@ -525,12 +578,27 @@ def load_fallback_required_ml_df(
     """Load all ML rows that require GPT mini fallback for this version."""
     cfg = _cfg(config)
     table_name = get_output_table(config, input_table_key or cfg["output_table_key"])
-    return (
+    base_df = (
         spark.table(table_name)
         .where(F.col("prompt_version") == _version_value(config, "prompt_version"))
         .where(F.col("taxonomy_version") == _version_value(config, "taxonomy_version"))
         .where(F.col("model_version") == _classification_model_version(config))
-        .where(F.col("classification_stage") == "embedding_prototype_llm_fallback")
+    )
+    fallback_required_df = base_df.where(
+        F.col("classification_stage") == "embedding_prototype_llm_fallback"
+    )
+
+    fallback_done_keys = (
+        base_df.where(F.col("classification_stage") == "gpt_mini_fallback")
+        .select(*(GROUP_COLS + ["memo_id"]))
+        .dropDuplicates()
+    )
+    final_done_keys = _load_existing_final_keys(spark, config)
+
+    return (
+        fallback_required_df
+        .join(fallback_done_keys, on=GROUP_COLS + ["memo_id"], how="left_anti")
+        .join(final_done_keys, on=GROUP_COLS + ["memo_id"], how="left_anti")
         .dropDuplicates(GROUP_COLS + ["memo_id", "prompt_version", "taxonomy_version", "model_version"])
     )
 
@@ -581,9 +649,25 @@ def rebuild_llm_fallback_queue_from_ml_classification(
         config,
         created_by="rebuild_llm_fallback_queue",
     )
+
+    if _table_exists(spark, fallback_queue_table):
+        existing_queue_keys = (
+            spark.table(fallback_queue_table)
+            .where(F.col("prompt_version") == _version_value(config, "prompt_version"))
+            .where(F.col("taxonomy_version") == _version_value(config, "taxonomy_version"))
+            .where(F.col("model_version") == _classification_model_version(config))
+            .where(F.col("status") == "pending")
+            .select(*(GROUP_COLS + ["memo_id"]))
+            .dropDuplicates()
+        )
+        queue_df = queue_df.join(
+            existing_queue_keys,
+            on=GROUP_COLS + ["memo_id"],
+            how="left_anti",
+        )
+
     queue_count = queue_df.count()
 
-    _delete_existing_pending_fallback_queue(spark, fallback_queue_table, config)
     if queue_count > 0:
         save_llm_fallback_queue(
             queue_df,
