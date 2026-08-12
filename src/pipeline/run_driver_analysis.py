@@ -72,14 +72,14 @@ driver_input_result
 
 display(
     spark.table(DRIVER_INPUT_TABLE)
-    .groupBy("is_lifestyle", "cate_1_depth", "cate_2_depth")
+    .groupBy("is_lifestyle", "cate_2_depth_kor")
     .agg(
         F.count("*").alias("model_category_rows"),
         F.countDistinct("model_id").alias("model_cnt"),
         F.sum("total_count").alias("review_cnt"),
         F.avg("avg_sc").alias("avg_sc"),
     )
-    .orderBy("cate_1_depth", "cate_2_depth")
+    .orderBy("is_lifestyle", "cate_2_depth_kor")
 )
 
 # COMMAND ----------
