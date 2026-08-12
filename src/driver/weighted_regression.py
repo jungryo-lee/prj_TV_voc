@@ -195,15 +195,14 @@ def _build_wide_frames(input_pdf: pd.DataFrame, group_dims: list[str]) -> tuple[
     return wide_df, meta_df
 
 
-def _select_x_by_weighted_corr(
+def _calculate_weighted_corrs(
     pdf: pd.DataFrame,
     y_feature: str,
     x_features: list[str],
     *,
-    corr_threshold: float,
     weight_method: str,
 ) -> list[tuple[str, float]]:
-    """Select X features by absolute weighted correlation."""
+    """Calculate weighted correlation for every available X feature."""
     y_score_col = f"{y_feature}_score"
     y_count_col = f"{y_feature}_count"
     if y_score_col not in pdf.columns or y_count_col not in pdf.columns:
@@ -211,7 +210,7 @@ def _select_x_by_weighted_corr(
 
     y = pdf[y_score_col]
     weights = _weight_series(pdf[y_count_col], weight_method)
-    selected: list[tuple[str, float]] = []
+    corr_values: list[tuple[str, float]] = []
     for x_feature in x_features:
         if x_feature == y_feature:
             continue
@@ -219,9 +218,22 @@ def _select_x_by_weighted_corr(
         if x_score_col not in pdf.columns:
             continue
         corr = weighted_corr(pdf[x_score_col], y, weights)
-        if pd.notna(corr) and abs(corr) >= corr_threshold:
-            selected.append((x_feature, corr))
-    return sorted(selected, key=lambda item: abs(item[1]), reverse=True)
+        if pd.notna(corr):
+            corr_values.append((x_feature, corr))
+    return sorted(corr_values, key=lambda item: abs(item[1]), reverse=True)
+
+
+def _select_x_by_weighted_corr(
+    corr_values: list[tuple[str, float]],
+    *,
+    corr_threshold: float,
+) -> list[tuple[str, float]]:
+    """Select regression candidates by absolute weighted correlation."""
+    return [
+        (x_feature, corr)
+        for x_feature, corr in corr_values
+        if pd.notna(corr) and abs(corr) >= corr_threshold
+    ]
 
 
 def _fit_wls(
@@ -327,14 +339,18 @@ def run_weighted_regression(
                     continue
 
                 for y_feature in features:
-                    selected_x = _select_x_by_weighted_corr(
+                    all_corr_values = _calculate_weighted_corrs(
                         group_pdf,
                         y_feature,
                         features,
-                        corr_threshold=corr_threshold,
                         weight_method=weight_method,
                     )
-                    for x_feature, corr in selected_x:
+                    selected_x = _select_x_by_weighted_corr(
+                        all_corr_values,
+                        corr_threshold=corr_threshold,
+                    )
+                    selected_feature_set = {x_feature for x_feature, _ in selected_x}
+                    for x_feature, corr in all_corr_values:
                         corr_rows.append(
                             {
                                 "segment_col": segment_name,
@@ -346,9 +362,9 @@ def run_weighted_regression(
                                 "x_feature": x_feature,
                                 "x_feature_label": feature_labels.get(x_feature, x_feature),
                                 "weighted_corr": float(corr),
-                            "abs_weighted_corr": float(abs(corr)),
-                            "selected_for_regression": True,
-                        }
+                                "abs_weighted_corr": float(abs(corr)),
+                                "selected_for_regression": x_feature in selected_feature_set,
+                            }
                         )
 
                     model = _fit_wls(
