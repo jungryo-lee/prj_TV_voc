@@ -31,7 +31,6 @@ MODEL_SCHEMA = StructType(
         StructField("group_dim", StringType(), False),
         StructField("group_key", StringType(), False),
         StructField("y_feature", StringType(), False),
-        StructField("y_feature_label", StringType(), True),
         StructField("y_obs", LongType(), True),
         StructField("x_feature_count", LongType(), True),
         StructField("r_squared", DoubleType(), True),
@@ -53,12 +52,11 @@ COEF_SCHEMA = StructType(
         StructField("group_dim", StringType(), False),
         StructField("group_key", StringType(), False),
         StructField("y_feature", StringType(), False),
-        StructField("y_feature_label", StringType(), True),
         StructField("x_feature", StringType(), False),
-        StructField("x_feature_label", StringType(), True),
         StructField("coef", DoubleType(), True),
         StructField("p_value", DoubleType(), True),
         StructField("t_value", DoubleType(), True),
+        StructField("y_obs", LongType(), True),
         StructField("x_obs", LongType(), True),
         StructField("abs_coef", DoubleType(), True),
         StructField("driver_rank", LongType(), True),
@@ -77,9 +75,7 @@ CORR_SCHEMA = StructType(
         StructField("group_dim", StringType(), False),
         StructField("group_key", StringType(), False),
         StructField("y_feature", StringType(), False),
-        StructField("y_feature_label", StringType(), True),
         StructField("x_feature", StringType(), False),
-        StructField("x_feature_label", StringType(), True),
         StructField("weighted_corr", DoubleType(), True),
         StructField("abs_weighted_corr", DoubleType(), True),
         StructField("selected_for_regression", BooleanType(), True),
@@ -94,13 +90,13 @@ DRIVER_SELECTION_SCHEMA = StructType(
         StructField("group_dim", StringType(), False),
         StructField("group_key", StringType(), False),
         StructField("y_feature", StringType(), False),
-        StructField("y_feature_label", StringType(), True),
         StructField("x_feature", StringType(), False),
-        StructField("x_feature_label", StringType(), True),
         StructField("coef", DoubleType(), True),
         StructField("p_value", DoubleType(), True),
         StructField("t_value", DoubleType(), True),
         StructField("weighted_corr", DoubleType(), True),
+        StructField("y_obs", LongType(), True),
+        StructField("x_obs", LongType(), True),
         StructField("abs_coef", DoubleType(), True),
         StructField("driver_rank", LongType(), True),
         StructField("is_driver", IntegerType(), True),
@@ -161,17 +157,6 @@ def _weight_series(count_series: pd.Series, method: str) -> pd.Series:
     if method == "total_count":
         return counts
     return np.sqrt(counts)
-
-
-def _feature_label_map(input_pdf: pd.DataFrame) -> dict[str, str]:
-    """Map stable feature names to human-readable category labels."""
-    rows = (
-        input_pdf[["feature_name", "category_label"]]
-        .dropna()
-        .drop_duplicates()
-        .to_dict("records")
-    )
-    return {str(row["feature_name"]): str(row["category_label"]) for row in rows}
 
 
 def _build_wide_frames(input_pdf: pd.DataFrame, group_dims: list[str]) -> tuple[pd.DataFrame, pd.DataFrame]:
@@ -294,7 +279,6 @@ def run_weighted_regression(
     segment_col = str(driver_cfg.get("segment_col") or "").strip()
     configured_segment_values = [str(value) for value in driver_cfg.get("segment_values", []) or []]
 
-    feature_labels = _feature_label_map(input_pdf)
     features = sorted(str(value) for value in input_pdf["feature_name"].dropna().unique())
     if segment_col and segment_col in input_pdf.columns:
         if configured_segment_values:
@@ -358,9 +342,7 @@ def run_weighted_regression(
                                 "group_dim": group_dim,
                                 "group_key": group_key,
                                 "y_feature": y_feature,
-                                "y_feature_label": feature_labels.get(y_feature, y_feature),
                                 "x_feature": x_feature,
-                                "x_feature_label": feature_labels.get(x_feature, x_feature),
                                 "weighted_corr": float(corr),
                                 "abs_weighted_corr": float(abs(corr)),
                                 "selected_for_regression": x_feature in selected_feature_set,
@@ -378,6 +360,12 @@ def run_weighted_regression(
                         continue
 
                     selected_feature_names = [x for x, _ in selected_x]
+                    y_score_col = f"{y_feature}_score"
+                    y_count_col = f"{y_feature}_count"
+                    model_base_pdf = group_pdf[
+                        (group_pdf[y_count_col] > 0) & group_pdf[y_score_col].notna()
+                    ]
+                    y_obs = int(model.nobs)
                     model_rows.append(
                         {
                             "segment_col": segment_name,
@@ -385,7 +373,6 @@ def run_weighted_regression(
                             "group_dim": group_dim,
                             "group_key": group_key,
                             "y_feature": y_feature,
-                            "y_feature_label": feature_labels.get(y_feature, y_feature),
                             "y_obs": int(model.nobs),
                             "x_feature_count": int(len(selected_feature_names)),
                             "r_squared": float(model.rsquared),
@@ -406,9 +393,7 @@ def run_weighted_regression(
                             "group_dim": group_dim,
                             "group_key": group_key,
                             "y_feature": y_feature,
-                            "y_feature_label": feature_labels.get(y_feature, y_feature),
                             "x_feature": "β₀",
-                            "x_feature_label": "β₀",
                             "coef": float(model.params.get("const"))
                             if pd.notna(model.params.get("const"))
                             else None,
@@ -418,7 +403,8 @@ def run_weighted_regression(
                             "t_value": float(model.tvalues.get("const"))
                             if pd.notna(model.tvalues.get("const"))
                             else None,
-                            "x_obs": int(model.nobs),
+                            "y_obs": y_obs,
+                            "x_obs": None,
                             "abs_coef": abs(float(model.params.get("const")))
                             if pd.notna(model.params.get("const"))
                             else None,
@@ -432,6 +418,12 @@ def run_weighted_regression(
                     corr_by_feature = dict(selected_x)
                     for x_feature in selected_feature_names:
                         param_name = f"{x_feature}_score"
+                        x_count_col = f"{x_feature}_count"
+                        x_obs = (
+                            int((model_base_pdf[x_count_col] > 0).sum())
+                            if x_count_col in model_base_pdf.columns
+                            else None
+                        )
                         coef_value = (
                             float(model.params.get(param_name))
                             if pd.notna(model.params.get(param_name))
@@ -461,15 +453,14 @@ def run_weighted_regression(
                                 "group_dim": group_dim,
                                 "group_key": group_key,
                                 "y_feature": y_feature,
-                                "y_feature_label": feature_labels.get(y_feature, y_feature),
                                 "x_feature": x_feature,
-                                "x_feature_label": feature_labels.get(x_feature, x_feature),
                                 "coef": coef_value,
                                 "p_value": p_value,
                                 "t_value": float(model.tvalues.get(param_name))
                                 if pd.notna(model.tvalues.get(param_name))
                                 else None,
-                                "x_obs": int(model.nobs),
+                                "y_obs": y_obs,
+                                "x_obs": x_obs,
                                 "abs_coef": abs_coef_value,
                                 "driver_rank": None,
                                 "is_driver": is_driver,
