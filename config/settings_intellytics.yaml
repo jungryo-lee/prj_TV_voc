@@ -67,6 +67,7 @@ tables:
     weighted_regression_model: sandbox.z_jungryo_lee.tv_voc_weighted_regression_model_intellytics
     weighted_network_edges: sandbox.z_jungryo_lee.tv_voc_weighted_network_edges_intellytics
     driver_selection: sandbox.z_jungryo_lee.tv_voc_driver_selection_intellytics
+    driver_ai_insight: sandbox.z_jungryo_lee.tv_voc_driver_ai_insight_intellytics
     ai_insight: sandbox.z_jungryo_lee.tv_voc_ai_insight_intellytics
     dashboard_export: sandbox.z_jungryo_lee.tv_voc_dashboard_export_intellytics
 
@@ -90,6 +91,13 @@ llm:
         temperature: 0.0
         max_tokens: 2200
 
+    opus_45:
+      endpoint: databricks-claude-opus-4-5
+      model_version: claude-opus-4-5
+      inference:
+        temperature: 0.0
+        max_tokens: 2200
+
     gpt_55:
       endpoint: databricks-gpt-5-5
       model_version: gpt-5-5
@@ -107,6 +115,18 @@ version:
   taxonomy_version: v1_intellytics_non_lifestyle
   model_version: claude-sonnet-4
   pipeline_version: v1_intellytics_non_lifestyle
+
+driver_ai_insight:
+  output_table_key: driver_ai_insight
+  default_model_key: sonnet_46
+  executive_model_key: opus_45
+  prompt_version: v1_driver_ai_insight
+  min_y_obs: 30
+  min_adj_r_squared: 0.10
+  max_prob_f: 0.05
+  max_models_in_context: 3
+  max_drivers_in_context: 3
+  max_correlations_in_context: 3
 
 metadata_columns:
   run_id: run_id
