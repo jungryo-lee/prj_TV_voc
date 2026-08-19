@@ -23,10 +23,12 @@ def _normalized_category_sql(alias: str) -> tuple[str, str]:
 
 
 def _memo_norm_sql(alias: str) -> str:
+    """Return Spark SQL matching ``common.memo_id.normalize_memo_expr`` exactly."""
     return (
         "TRIM(REGEXP_REPLACE(REGEXP_REPLACE("
         f"LOWER(TRANSLATE(COALESCE(CAST({alias}.memo AS STRING), ''), '　', ' ')), "
-        "'[^0-9a-zA-Z가-힣\\s]', ' '), '\\s+', ' '))"
+        # Spark SQL needs two backslashes in the SQL literal for regex \s.
+        "'[^0-9a-zA-Z가-힣\\\\s]', ' '), '\\\\s+', ' '))"
     )
 
 
