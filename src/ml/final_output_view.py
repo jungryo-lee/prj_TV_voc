@@ -166,41 +166,50 @@ def create_or_replace_final_classification_view(
     source_table = get_source_table(config, "raw_ods_table")
     final_detail_table = get_output_table(config, "classification_detail_final")
     topic_group_table = get_output_table(config, "topic_group")
-    sql_text = build_final_classification_view_sql(
+    create_sql = build_final_classification_view_sql(
         config,
         final_detail_exists=spark.catalog.tableExists(final_detail_table),
         topic_group_exists=spark.catalog.tableExists(topic_group_table),
     )
     try:
-        spark.sql(sql_text)
-    except Exception as initial_error:
-        if not replace_existing_table_with_view:
-            raise
+        object_type = spark.catalog.getTable(final_view).tableType.upper()
+    except Exception:
+        object_type = None
 
-        # The old target was a raw mirror view. Replace it safely regardless of
-        # whether a legacy deployment left a view or a managed table behind.
+    # Delta Sharing blocks DROP/CREATE OR REPLACE for an already shared view.
+    # ALTER VIEW changes only its definition and keeps the shared object intact.
+    if object_type == "VIEW":
+        create_prefix = f"CREATE OR REPLACE VIEW {final_view} AS"
+        alter_prefix = f"ALTER VIEW {final_view} AS"
+        alter_sql = create_sql.replace(create_prefix, alter_prefix, 1)
         try:
-            object_type = spark.catalog.getTable(final_view).tableType.upper()
-        except Exception:
-            object_type = None
-
-        if object_type == "VIEW":
-            spark.sql(f"DROP VIEW IF EXISTS {final_view}")
-        elif object_type in {"MANAGED", "EXTERNAL"}:
-            spark.sql(f"DROP TABLE IF EXISTS {final_view}")
-        else:
+            spark.sql(alter_sql)
+        except Exception as error:
             raise RuntimeError(
-                f"Failed to create final Tableau view {final_view}. "
-                f"Existing object type could not be determined: {object_type!r}."
-            ) from initial_error
-
+                f"Failed to alter final Tableau view {final_view}. "
+                "The shared view was left unchanged."
+            ) from error
+    else:
         try:
-            spark.sql(sql_text)
-        except Exception as retry_error:
-            raise RuntimeError(
-                f"Failed to create final Tableau view {final_view} after replacing "
-                f"the legacy {object_type.lower()} object."
-            ) from retry_error
+            spark.sql(create_sql)
+        except Exception as initial_error:
+            if not replace_existing_table_with_view:
+                raise
+
+            # A legacy managed table can be replaced only when it is not shared.
+            try:
+                object_type = spark.catalog.getTable(final_view).tableType.upper()
+            except Exception:
+                object_type = None
+
+            if object_type in {"MANAGED", "EXTERNAL"}:
+                spark.sql(f"DROP TABLE IF EXISTS {final_view}")
+                spark.sql(create_sql)
+            else:
+                raise RuntimeError(
+                    f"Failed to create final Tableau view {final_view}. "
+                    f"Existing object type could not be replaced: {object_type!r}."
+                ) from initial_error
 
     source_row_count = spark.table(source_table).count()
     final_row_count = spark.table(final_view).count()
