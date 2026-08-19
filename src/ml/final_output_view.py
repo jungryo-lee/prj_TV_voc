@@ -173,11 +173,34 @@ def create_or_replace_final_classification_view(
     )
     try:
         spark.sql(sql_text)
-    except Exception:
+    except Exception as initial_error:
         if not replace_existing_table_with_view:
             raise
-        spark.sql(f"DROP TABLE IF EXISTS {final_view}")
-        spark.sql(sql_text)
+
+        # The old target was a raw mirror view. Replace it safely regardless of
+        # whether a legacy deployment left a view or a managed table behind.
+        try:
+            object_type = spark.catalog.getTable(final_view).tableType.upper()
+        except Exception:
+            object_type = None
+
+        if object_type == "VIEW":
+            spark.sql(f"DROP VIEW IF EXISTS {final_view}")
+        elif object_type in {"MANAGED", "EXTERNAL"}:
+            spark.sql(f"DROP TABLE IF EXISTS {final_view}")
+        else:
+            raise RuntimeError(
+                f"Failed to create final Tableau view {final_view}. "
+                f"Existing object type could not be determined: {object_type!r}."
+            ) from initial_error
+
+        try:
+            spark.sql(sql_text)
+        except Exception as retry_error:
+            raise RuntimeError(
+                f"Failed to create final Tableau view {final_view} after replacing "
+                f"the legacy {object_type.lower()} object."
+            ) from retry_error
 
     source_row_count = spark.table(source_table).count()
     final_row_count = spark.table(final_view).count()
