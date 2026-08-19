@@ -82,11 +82,12 @@ def load_existing_final_keys(
     table_key: str = "classification_detail_final",
     table_name: str | None = None,
 ) -> DataFrame:
-    """Load memo_ids already finalized for the active taxonomy version.
+    """Load memo_ids already finalized by the pipeline.
 
     This table is the pipeline's "do not classify again" registry. Once a
     memo_id is present here, later design/ML/fallback batches should skip it
-    unless a separate human-review process intentionally changes the label.
+    regardless of prompt or taxonomy version, unless a separate human-review
+    process intentionally changes the label.
     """
     resolved_table = table_name or get_output_table(config, table_key)
     if not _table_exists(spark, resolved_table):
@@ -95,8 +96,7 @@ def load_existing_final_keys(
 
     return (
         spark.table(resolved_table)
-        .where(F.col("prompt_version") == _version_value(config, "prompt_version"))
-        .where(F.col("taxonomy_version") == _version_value(config, "taxonomy_version"))
+        .where(F.col("memo_id").isNotNull())
         .select(
             F.col("cate_1_depth").cast("string"),
             F.col("cate_2_depth").cast("string"),

@@ -159,7 +159,7 @@ def _load_existing_final_keys(
     spark: SparkSession,
     config: dict[str, Any],
 ) -> DataFrame:
-    """Load finalized memo_ids for active prompt/taxonomy version."""
+    """Load all finalized memo_ids so they are never classified again automatically."""
     cfg = config.get("ml_classification", {}) or {}
     table_key = cfg.get("final_classification_table_key", "classification_detail_final")
     table_name = get_output_table(config, table_key)
@@ -169,8 +169,7 @@ def _load_existing_final_keys(
 
     return (
         spark.table(table_name)
-        .where(F.col("prompt_version") == _version_value(config, "prompt_version"))
-        .where(F.col("taxonomy_version") == _version_value(config, "taxonomy_version"))
+        .where(F.col("memo_id").isNotNull())
         .select(
             F.col("cate_1_depth").cast("string"),
             F.col("cate_2_depth").cast("string"),
