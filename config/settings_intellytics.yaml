@@ -27,7 +27,9 @@ unity_catalog:
 
 source:
   raw_review_table: sandbox.t_online_voc_analysis.intellytics_display_online_voc_work
-  raw_mirror_table: sandbox.t_online_voc_analysis.intellytics_display_online_voc
+  raw_ods_table: kic_data_ods.intellytics_voc.intellytics_display_online_voc
+  raw_mirror_table: sandbox.t_online_voc_analysis.intellytics_display_online_voc_raw
+  final_tableau_view: sandbox.t_online_voc_analysis.intellytics_display_online_voc
   model_meta_table: sandbox.z_jungryo_lee.buzz_model_meta
   sentiment_source_table: sandbox.z_jungryo_lee.buzz_sc_score_dataset
   filters:
@@ -52,6 +54,8 @@ tables:
     classification_full: sandbox.z_jungryo_lee.tv_voc_classification_full_intellytics
     classification_summary: sandbox.z_jungryo_lee.tv_voc_classification_summary_intellytics
     classification_detail_final: sandbox.z_jungryo_lee.tv_voc_classification_detail_final_intellytics
+    # Legacy physical exports retained for historical reference. Tableau uses
+    # source.final_tableau_view, which preserves every ODS row.
     classification_tableau_final: sandbox.z_jungryo_lee.tv_voc_classification_tableau_final_intellytics
     classification_tableau_grouped_final: sandbox.z_jungryo_lee.tv_voc_classification_tableau_grouped_final_intellytics
     review_decision: sandbox.z_jungryo_lee.tv_voc_review_decision_intellytics
@@ -120,7 +124,7 @@ driver_ai_insight:
   output_table_key: driver_ai_insight
   default_model_key: sonnet_46
   executive_model_key: opus_45
-  prompt_version: v1_driver_ai_insight
+  prompt_version: v2_driver_ai_insight
   min_y_obs: 30
   min_adj_r_squared: 0.10
   max_prob_f: 0.05

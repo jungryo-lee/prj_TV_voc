@@ -43,9 +43,9 @@ print({"config": CONFIG_FILE_NAME, "driver_ai_insight": AI_INSIGHT_TABLE})
 # `sonnet_46` is the operating default. Use `opus_45` only for selected executive-facing refreshes.
 MODEL_KEY = "sonnet_46"
 
-# First run recommendation: create the overview and y-feature insights only for `all`.
-# After validating the output, set TARGET_GROUP_DIMS = None to generate every configured dimension.
-TARGET_GROUP_DIMS = ["all"]
+# Generate all configured dimensions: all, brand_name, country_code, post_year,
+# and unified_device_type. Restrict this list only for a targeted re-generation.
+TARGET_GROUP_DIMS = None
 TARGET_GROUP_KEYS = None
 TARGET_Y_FEATURES = None
 

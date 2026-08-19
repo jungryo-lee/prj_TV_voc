@@ -134,8 +134,13 @@ def _insight_key(record: dict[str, Any], model_key: str, prompt_version: str) ->
 def _build_prompts(payload: dict[str, Any]) -> tuple[str, str]:
     system_prompt = """You are a cautious TV VOC and statistical-analysis advisor.
 Write Korean dashboard insight text based only on the supplied statistical evidence.
-Do not claim causality: use expressions such as '연관', '영향 가능성', and '우선 검토'.
+Do not claim causality: use expressions such as '연관', '관련성', and '우선 검토'.
 Do not invent values, drivers, or comparisons absent from the input.
+`y_obs` means the number of model-level observations, not respondents, customers, or review counts.
+Never write p≈0. Use the supplied p-value faithfully, or say 'p<0.001' only when the supplied value is below 0.001.
+Use '평가 점수' or '평가 경험' instead of '만족도' unless the y_feature explicitly represents satisfaction.
+For group_overview, call a driver '공통' only when its appearance_count is 2 or greater in common_drivers.
+If condition_comparison is empty, state exactly that no condition-group comparison was performed; do not propose an unprovided comparison group.
 If analysis_status is weak_model or no_model, explicitly state that regression evidence is insufficient
 and use the supplied correlation candidates only as exploratory evidence.
 Return JSON only with core_summary, detail_insight, condition_insight, caution_note.
@@ -143,9 +148,9 @@ Each value must be a concise Korean string."""
     user_prompt = """Generate an executive-friendly dashboard insight from this evidence.
 
 Required structure:
-- core_summary: 1-2 sentences. For significant regression, identify the strongest evidence and up to three common drivers. For weak/no model, state the limitation and up to three correlation alternatives.
+- core_summary: 1-2 sentences. For significant y_feature insight, name the y_feature and up to three statistically significant drivers. For significant group_overview, name up to three representative y_feature models by adjusted R-squared and up to three common_drivers only. For weak/no model, state the limitation and up to three correlation alternatives.
 - detail_insight: Explain the evidence and practical product-planning implication without causal overclaim.
-- condition_insight: Describe notable differences versus peer group keys when comparison evidence exists; otherwise state that comparison is limited.
+- condition_insight: Describe only evidence-backed differences versus peer group keys. If the comparison list is empty, write '전체(all) 기준으로 별도 조건 그룹 비교는 수행하지 않았습니다.'
 - caution_note: State the relevant statistical caveat in one sentence.
 
 Evidence JSON:
@@ -216,6 +221,44 @@ def _top_correlations(
     return [_round_record(row) for row in rows[:limit]]
 
 
+def _common_drivers(
+    coefs: list[dict[str, Any]],
+    scope: dict[str, Any],
+    top_y_features: list[str],
+    limit: int,
+) -> list[dict[str, Any]]:
+    """Summarize X features repeated across representative Y models."""
+    grouped: dict[str, list[dict[str, Any]]] = {}
+    for row in coefs:
+        if (
+            _same_scope(row, scope)
+            and row.get("x_feature") != "β₀"
+            and row.get("y_feature") in top_y_features
+            and int(row.get("is_driver") or 0) == 1
+        ):
+            grouped.setdefault(str(row["x_feature"]), []).append(row)
+
+    results: list[dict[str, Any]] = []
+    for x_feature, rows in grouped.items():
+        distinct_y_features = sorted({str(row["y_feature"]) for row in rows})
+        representative = max(rows, key=lambda row: float(row.get("abs_coef") or 0.0))
+        results.append(
+            {
+                "x_feature": x_feature,
+                "appearance_count": len(distinct_y_features),
+                "affected_y_features": distinct_y_features,
+                "representative_coef": round(float(representative.get("coef") or 0.0), 4),
+                "best_p_value": round(float(min(row.get("p_value") or 1.0 for row in rows)), 6),
+            }
+        )
+    results = [row for row in results if row["appearance_count"] >= 2]
+    results.sort(
+        key=lambda row: (row["appearance_count"], abs(row["representative_coef"])),
+        reverse=True,
+    )
+    return results[:limit]
+
+
 def _comparison_records(
     models: list[dict[str, Any]],
     scope: dict[str, Any],
@@ -233,7 +276,10 @@ def _comparison_records(
         and (y_feature is None or row.get("y_feature") == y_feature)
     ]
     rows.sort(key=lambda row: float(row.get("adj_r_squared") or -1.0), reverse=True)
-    return [_round_record(row) for row in rows[: cfg["max_models_in_context"]]]
+    current_rows = [row for row in rows if row.get("group_key") == scope["group_key"]]
+    peer_rows = [row for row in rows if row.get("group_key") != scope["group_key"]]
+    selected_rows = current_rows[:1] + peer_rows[: max(cfg["max_models_in_context"] - 1, 0)]
+    return [_round_record(row) for row in selected_rows]
 
 
 def _build_contexts(
@@ -269,6 +315,7 @@ def _build_contexts(
         )
         if include_group_overview:
             top_models = [_round_record(row) for row in scope_models[: cfg["max_models_in_context"]]]
+            representative_y_features = [str(row["y_feature"]) for row in scope_models[: cfg["max_models_in_context"]]]
             primary = scope_models[0] if scope_models else None
             contexts.append(
                 {
@@ -282,7 +329,12 @@ def _build_contexts(
                     "y_obs": primary.get("y_obs") if primary else None,
                     "significant_driver_count": len(_top_drivers(coefs, scope, None, 9999)),
                     "top_models": top_models,
-                    "top_drivers": _top_drivers(coefs, scope, None, cfg["max_drivers_in_context"]),
+                    "top_drivers": _common_drivers(
+                        coefs,
+                        scope,
+                        representative_y_features,
+                        cfg["max_drivers_in_context"],
+                    ),
                     "top_correlations": _top_correlations(corrs, scope, None, cfg["max_correlations_in_context"]),
                     "condition_comparison": _comparison_records(models, scope, None, cfg),
                 }
