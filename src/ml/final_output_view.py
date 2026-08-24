@@ -32,6 +32,58 @@ def _memo_norm_sql(alias: str) -> str:
     )
 
 
+def _source_with_keys_sql(config: dict[str, Any], *, source_table_key: str) -> str:
+    """Return source rows with the exact keys used by the final-view join."""
+    source_table = get_source_table(config, source_table_key)
+    cate_1_sql, cate_2_sql = _normalized_category_sql("r")
+    aliased_cate_2_sql = cate_2_alias_sql(
+        config,
+        cate_1_col=cate_1_sql,
+        cate_2_col=cate_2_sql,
+    )
+    memo_norm_sql = _memo_norm_sql("r")
+
+    return f"""SELECT
+  r.*,
+  {cate_1_sql} AS _join_cate_1_depth,
+  {aliased_cate_2_sql} AS _join_cate_2_depth,
+  SHA2(
+    CONCAT_WS(
+      '||',
+      COALESCE(CAST({cate_1_sql} AS STRING), ''),
+      COALESCE(CAST({aliased_cate_2_sql} AS STRING), ''),
+      COALESCE(CAST(CAST(r.sc_measurement AS INT) AS STRING), ''),
+      {memo_norm_sql}
+    ),
+    256
+  ) AS _join_memo_id
+FROM {source_table} r"""
+
+
+def _final_latest_sql(final_detail_table: str, *, exists: bool) -> str:
+    """Return the latest immutable label for each classified memo key."""
+    if not exists:
+        return _empty_final_latest_sql()
+
+    return f"""SELECT *
+FROM (
+  SELECT
+    f.cate_1_depth,
+    f.cate_2_depth,
+    f.sc_measurement,
+    f.memo_id,
+    f.pred_topic,
+    f.pred_topic_type,
+    f.created_at,
+    ROW_NUMBER() OVER (
+      PARTITION BY f.cate_1_depth, f.cate_2_depth, f.sc_measurement, f.memo_id
+      ORDER BY f.created_at DESC, f.run_id DESC
+    ) AS _rn
+  FROM {final_detail_table} f
+) ranked
+WHERE _rn = 1"""
+
+
 def build_final_classification_view_sql(
     config: dict[str, Any],
     *,
@@ -48,30 +100,14 @@ def build_final_classification_view_sql(
     final_detail_table = get_output_table(config, final_detail_table_key)
     topic_group_table = get_output_table(config, topic_group_table_key)
 
-    cate_1_sql, cate_2_sql = _normalized_category_sql("r")
-    aliased_cate_2_sql = cate_2_alias_sql(
+    source_with_keys_sql = _source_with_keys_sql(
         config,
-        cate_1_col=cate_1_sql,
-        cate_2_col=cate_2_sql,
+        source_table_key=source_table_key,
     )
-    memo_norm_sql = _memo_norm_sql("r")
-    final_latest_sql = f"""SELECT *
-  FROM (
-    SELECT
-      f.cate_1_depth,
-      f.cate_2_depth,
-      f.sc_measurement,
-      f.memo_id,
-      f.pred_topic,
-      f.pred_topic_type,
-      f.created_at,
-      ROW_NUMBER() OVER (
-        PARTITION BY f.cate_1_depth, f.cate_2_depth, f.sc_measurement, f.memo_id
-        ORDER BY f.created_at DESC, f.run_id DESC
-      ) AS _rn
-    FROM {final_detail_table} f
-  ) ranked
-  WHERE _rn = 1""" if final_detail_exists else _empty_final_latest_sql()
+    final_latest_sql = _final_latest_sql(
+        final_detail_table,
+        exists=final_detail_exists,
+    )
     topic_group_latest_sql = f"""SELECT *
   FROM (
     SELECT
@@ -92,21 +128,7 @@ def build_final_classification_view_sql(
     return f"""
 CREATE OR REPLACE VIEW {final_view} AS
 WITH source_with_keys AS (
-  SELECT
-    r.*,
-    {cate_1_sql} AS _join_cate_1_depth,
-    {aliased_cate_2_sql} AS _join_cate_2_depth,
-    SHA2(
-      CONCAT_WS(
-        '||',
-        COALESCE(CAST({cate_1_sql} AS STRING), ''),
-        COALESCE(CAST({aliased_cate_2_sql} AS STRING), ''),
-        COALESCE(CAST(CAST(r.sc_measurement AS INT) AS STRING), ''),
-        {memo_norm_sql}
-      ),
-      256
-    ) AS _join_memo_id
-  FROM {source_table} r
+  {source_with_keys_sql}
 ), final_latest AS (
   {final_latest_sql}
 ), topic_group_latest AS (
@@ -132,6 +154,164 @@ LEFT JOIN topic_group_latest g
  AND CAST(f.sc_measurement AS INT) = CAST(g.sc_measurement AS INT)
  AND f.pred_topic = g.topic
 """.strip()
+
+
+def build_final_mapping_coverage_report(
+    spark: SparkSession,
+    config: dict[str, Any],
+    *,
+    source_table_key: str = "raw_ods_table",
+    final_detail_table_key: str = "classification_detail_final",
+) -> dict[str, Any]:
+    """Measure reusable final labels before refreshing source-derived views.
+
+    The report never changes a view or table. It uses the same category cleanup,
+    alias rules, and memo ID expression as the final Tableau view, so its match
+    rate is the expected label coverage after a refresh.
+    """
+    source_table = get_source_table(config, source_table_key)
+    final_detail_table = get_output_table(config, final_detail_table_key)
+    source_with_keys_sql = _source_with_keys_sql(
+        config,
+        source_table_key=source_table_key,
+    )
+    final_latest_sql = _final_latest_sql(
+        final_detail_table,
+        exists=spark.catalog.tableExists(final_detail_table),
+    )
+
+    common_cte = f"""
+WITH source_with_keys AS (
+  {source_with_keys_sql}
+), source_keys AS (
+  SELECT DISTINCT
+    _join_cate_1_depth,
+    _join_cate_2_depth,
+    CAST(sc_measurement AS INT) AS sc_measurement,
+    _join_memo_id
+  FROM source_with_keys
+), final_latest AS (
+  {final_latest_sql}
+), final_keys AS (
+  SELECT DISTINCT
+    cate_1_depth,
+    cate_2_depth,
+    CAST(sc_measurement AS INT) AS sc_measurement,
+    memo_id
+  FROM final_latest
+  WHERE pred_topic IS NOT NULL
+), matched_keys AS (
+  SELECT s.*
+  FROM source_keys s
+  INNER JOIN final_keys f
+    ON s._join_cate_1_depth = f.cate_1_depth
+   AND s._join_cate_2_depth = f.cate_2_depth
+   AND s.sc_measurement = f.sc_measurement
+   AND s._join_memo_id = f.memo_id
+), matched_source_rows AS (
+  SELECT s.*
+  FROM source_with_keys s
+  INNER JOIN matched_keys m
+    ON s._join_cate_1_depth = m._join_cate_1_depth
+   AND s._join_cate_2_depth = m._join_cate_2_depth
+   AND CAST(s.sc_measurement AS INT) = m.sc_measurement
+   AND s._join_memo_id = m._join_memo_id
+)
+"""
+
+    summary_df = spark.sql(
+        common_cte
+        + f"""
+SELECT
+  '{source_table}' AS source_table,
+  '{final_detail_table}' AS final_detail_table,
+  (SELECT COUNT(*) FROM source_with_keys) AS source_raw_rows,
+  (SELECT COUNT(*) FROM source_keys) AS source_distinct_memo_id_cnt,
+  (SELECT COUNT(*) FROM final_keys) AS historical_final_distinct_memo_id_cnt,
+  (SELECT COUNT(*) FROM matched_keys) AS reusable_distinct_memo_id_cnt,
+  (SELECT COUNT(*) FROM matched_source_rows) AS reusable_raw_rows,
+  (SELECT COUNT(*) FROM source_keys) - (SELECT COUNT(*) FROM matched_keys)
+    AS new_or_unclassified_distinct_memo_id_cnt,
+  (SELECT COUNT(*) FROM source_with_keys) - (SELECT COUNT(*) FROM matched_source_rows)
+    AS new_or_unclassified_raw_rows,
+  ROUND(
+    100.0 * (SELECT COUNT(*) FROM matched_keys)
+      / NULLIF((SELECT COUNT(*) FROM source_keys), 0),
+    2
+  ) AS source_distinct_memo_reuse_ratio_pct,
+  ROUND(
+    100.0 * (SELECT COUNT(*) FROM matched_source_rows)
+      / NULLIF((SELECT COUNT(*) FROM source_with_keys), 0),
+    2
+  ) AS source_raw_row_coverage_ratio_pct,
+  (SELECT COUNT(*) FROM source_with_keys
+   WHERE is_lifestyle = 'N' AND CAST(sc_measurement AS INT) IN (-1, 1))
+    AS pipeline_eligible_raw_rows,
+  (SELECT COUNT(DISTINCT _join_memo_id) FROM source_with_keys
+   WHERE is_lifestyle = 'N' AND CAST(sc_measurement AS INT) IN (-1, 1))
+    AS pipeline_eligible_distinct_memo_id_cnt,
+  (SELECT COUNT(*) FROM matched_source_rows
+   WHERE is_lifestyle = 'N' AND CAST(sc_measurement AS INT) IN (-1, 1))
+    AS reusable_eligible_raw_rows,
+  (SELECT COUNT(DISTINCT _join_memo_id) FROM matched_source_rows
+   WHERE is_lifestyle = 'N' AND CAST(sc_measurement AS INT) IN (-1, 1))
+    AS reusable_eligible_distinct_memo_id_cnt,
+  ROUND(
+    100.0 * (SELECT COUNT(*) FROM matched_source_rows
+             WHERE is_lifestyle = 'N' AND CAST(sc_measurement AS INT) IN (-1, 1))
+      / NULLIF((SELECT COUNT(*) FROM source_with_keys
+                WHERE is_lifestyle = 'N' AND CAST(sc_measurement AS INT) IN (-1, 1)), 0),
+    2
+  ) AS pipeline_eligible_raw_row_coverage_ratio_pct
+"""
+    )
+
+    group_df = spark.sql(
+        common_cte
+        + """
+SELECT
+  s._join_cate_1_depth AS cate_1_depth,
+  s._join_cate_2_depth AS cate_2_depth,
+  CAST(s.sc_measurement AS INT) AS sc_measurement,
+  COUNT(*) AS source_raw_rows,
+  COUNT(DISTINCT s._join_memo_id) AS source_distinct_memo_id_cnt,
+  COUNT(DISTINCT CASE
+    WHEN s.is_lifestyle = 'N' AND CAST(s.sc_measurement AS INT) IN (-1, 1)
+    THEN s._join_memo_id
+  END) AS pipeline_eligible_distinct_memo_id_cnt,
+  COUNT(DISTINCT m._join_memo_id) AS reusable_distinct_memo_id_cnt,
+  COUNT(m._join_memo_id) AS reusable_raw_rows,
+  COUNT(DISTINCT s._join_memo_id) - COUNT(DISTINCT m._join_memo_id)
+    AS new_or_unclassified_distinct_memo_id_cnt,
+  ROUND(
+    100.0 * COUNT(DISTINCT m._join_memo_id)
+      / NULLIF(COUNT(DISTINCT s._join_memo_id), 0),
+    2
+  ) AS source_distinct_memo_reuse_ratio_pct,
+  ROUND(
+    100.0 * COUNT(m._join_memo_id) / NULLIF(COUNT(*), 0),
+    2
+  ) AS source_raw_row_coverage_ratio_pct
+FROM source_with_keys s
+LEFT JOIN matched_keys m
+  ON s._join_cate_1_depth = m._join_cate_1_depth
+ AND s._join_cate_2_depth = m._join_cate_2_depth
+ AND CAST(s.sc_measurement AS INT) = m.sc_measurement
+ AND s._join_memo_id = m._join_memo_id
+GROUP BY
+  s._join_cate_1_depth,
+  s._join_cate_2_depth,
+  CAST(s.sc_measurement AS INT)
+ORDER BY source_distinct_memo_reuse_ratio_pct ASC, source_raw_rows DESC
+"""
+    )
+
+    return {
+        "source_table": source_table,
+        "final_detail_table": final_detail_table,
+        "summary_df": summary_df,
+        "group_df": group_df,
+    }
 
 
 def _empty_final_latest_sql() -> str:
