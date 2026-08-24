@@ -124,13 +124,17 @@ driver_ai_insight:
   output_table_key: driver_ai_insight
   default_model_key: sonnet_46
   executive_model_key: opus_45
-  prompt_version: v2_driver_ai_insight
+  prompt_version: v4_driver_dashboard_executive
   min_y_obs: 30
-  min_adj_r_squared: 0.10
+  min_adj_r_squared: 0.30
   max_prob_f: 0.05
+  min_abs_coef: 0.10
+  min_abs_weighted_corr: 0.30
+  max_coef_p_value: 0.05
   max_models_in_context: 3
   max_drivers_in_context: 3
   max_correlations_in_context: 3
+  max_group_keys_in_context: 10
 
 metadata_columns:
   run_id: run_id
