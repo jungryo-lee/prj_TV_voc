@@ -10,6 +10,21 @@ from common.category_alias import cate_2_alias_sql
 from common.config_loader import get_output_table, get_source_table
 
 
+def _incentive_review_filter_sql(alias: str) -> str:
+    """Return the final-view eligibility rule shared with the operating pipeline."""
+    return f"UPPER(TRIM(CAST({alias}.incentive_review AS STRING))) = 'N'"
+
+
+def _final_view_source_projection_sql(config: dict[str, Any], alias: str) -> str:
+    """Project the fixed Delta Sharing source schema in its published order."""
+    columns = (config.get("source", {}) or {}).get("final_tableau_source_columns") or []
+    if not columns:
+        raise ValueError(
+            "source.final_tableau_source_columns must define the fixed shared-view schema."
+        )
+    return ",\n  ".join(f"{alias}.`{column}`" for column in columns)
+
+
 def _normalized_category_sql(alias: str) -> tuple[str, str]:
     cate_1 = (
         f"TRIM(REGEXP_REPLACE(TRIM(CAST({alias}.cate_1_depth AS STRING)), "
@@ -33,7 +48,7 @@ def _memo_norm_sql(alias: str) -> str:
 
 
 def _source_with_keys_sql(config: dict[str, Any], *, source_table_key: str) -> str:
-    """Return source rows with the exact keys used by the final-view join."""
+    """Return eligible source rows with the exact keys used by the final-view join."""
     source_table = get_source_table(config, source_table_key)
     cate_1_sql, cate_2_sql = _normalized_category_sql("r")
     aliased_cate_2_sql = cate_2_alias_sql(
@@ -42,9 +57,11 @@ def _source_with_keys_sql(config: dict[str, Any], *, source_table_key: str) -> s
         cate_2_col=cate_2_sql,
     )
     memo_norm_sql = _memo_norm_sql("r")
+    incentive_review_filter_sql = _incentive_review_filter_sql("r")
 
     return f"""SELECT
   r.*,
+  CASE WHEN {incentive_review_filter_sql} THEN TRUE ELSE FALSE END AS _topic_pipeline_eligible,
   {cate_1_sql} AS _join_cate_1_depth,
   {aliased_cate_2_sql} AS _join_cate_2_depth,
   SHA2(
@@ -57,7 +74,8 @@ def _source_with_keys_sql(config: dict[str, Any], *, source_table_key: str) -> s
     ),
     256
   ) AS _join_memo_id
-FROM {source_table} r"""
+FROM {source_table} r
+WHERE {incentive_review_filter_sql}"""
 
 
 def _final_latest_sql(final_detail_table: str, *, exists: bool) -> str:
@@ -94,7 +112,7 @@ def build_final_classification_view_sql(
     final_detail_exists: bool = True,
     topic_group_exists: bool = True,
 ) -> str:
-    """Return SQL for an ODS-row-preserving final view with two added label columns."""
+    """Return SQL for an incentive-eligible source view with two added label columns."""
     source_table = get_source_table(config, source_table_key)
     final_view = get_source_table(config, final_view_key)
     final_detail_table = get_output_table(config, final_detail_table_key)
@@ -124,6 +142,7 @@ def build_final_classification_view_sql(
     FROM {topic_group_table} g
   ) ranked
   WHERE _rn = 1""" if topic_group_exists else _empty_topic_group_sql()
+    source_projection_sql = _final_view_source_projection_sql(config, "s")
 
     return f"""
 CREATE OR REPLACE VIEW {final_view} AS
@@ -135,7 +154,7 @@ WITH source_with_keys AS (
   {topic_group_latest_sql}
 )
 SELECT
-  s.* EXCEPT (_join_cate_1_depth, _join_cate_2_depth, _join_memo_id),
+  {source_projection_sql},
   f.pred_topic,
   CASE
     WHEN f.pred_topic IS NULL THEN NULL
@@ -144,7 +163,8 @@ SELECT
   END AS topic_group
 FROM source_with_keys s
 LEFT JOIN final_latest f
-  ON s._join_cate_1_depth = f.cate_1_depth
+  ON s._topic_pipeline_eligible
+ AND s._join_cate_1_depth = f.cate_1_depth
  AND s._join_cate_2_depth = f.cate_2_depth
  AND CAST(s.sc_measurement AS INT) = CAST(f.sc_measurement AS INT)
  AND s._join_memo_id = f.memo_id
@@ -245,22 +265,34 @@ SELECT
     2
   ) AS source_raw_row_coverage_ratio_pct,
   (SELECT COUNT(*) FROM source_with_keys
-   WHERE is_lifestyle = 'N' AND CAST(sc_measurement AS INT) IN (-1, 1))
+   WHERE is_lifestyle = 'N'
+     AND _topic_pipeline_eligible
+     AND CAST(sc_measurement AS INT) IN (-1, 1))
     AS pipeline_eligible_raw_rows,
   (SELECT COUNT(DISTINCT _join_memo_id) FROM source_with_keys
-   WHERE is_lifestyle = 'N' AND CAST(sc_measurement AS INT) IN (-1, 1))
+   WHERE is_lifestyle = 'N'
+     AND _topic_pipeline_eligible
+     AND CAST(sc_measurement AS INT) IN (-1, 1))
     AS pipeline_eligible_distinct_memo_id_cnt,
   (SELECT COUNT(*) FROM matched_source_rows
-   WHERE is_lifestyle = 'N' AND CAST(sc_measurement AS INT) IN (-1, 1))
+   WHERE is_lifestyle = 'N'
+     AND _topic_pipeline_eligible
+     AND CAST(sc_measurement AS INT) IN (-1, 1))
     AS reusable_eligible_raw_rows,
   (SELECT COUNT(DISTINCT _join_memo_id) FROM matched_source_rows
-   WHERE is_lifestyle = 'N' AND CAST(sc_measurement AS INT) IN (-1, 1))
+   WHERE is_lifestyle = 'N'
+     AND _topic_pipeline_eligible
+     AND CAST(sc_measurement AS INT) IN (-1, 1))
     AS reusable_eligible_distinct_memo_id_cnt,
   ROUND(
     100.0 * (SELECT COUNT(*) FROM matched_source_rows
-             WHERE is_lifestyle = 'N' AND CAST(sc_measurement AS INT) IN (-1, 1))
+             WHERE is_lifestyle = 'N'
+               AND _topic_pipeline_eligible
+               AND CAST(sc_measurement AS INT) IN (-1, 1))
       / NULLIF((SELECT COUNT(*) FROM source_with_keys
-                WHERE is_lifestyle = 'N' AND CAST(sc_measurement AS INT) IN (-1, 1)), 0),
+                WHERE is_lifestyle = 'N'
+                  AND _topic_pipeline_eligible
+                  AND CAST(sc_measurement AS INT) IN (-1, 1)), 0),
     2
   ) AS pipeline_eligible_raw_row_coverage_ratio_pct
 """
@@ -277,6 +309,7 @@ SELECT
   COUNT(DISTINCT s._join_memo_id) AS source_distinct_memo_id_cnt,
   COUNT(DISTINCT CASE
     WHEN s.is_lifestyle = 'N' AND CAST(s.sc_measurement AS INT) IN (-1, 1)
+     AND s._topic_pipeline_eligible
     THEN s._join_memo_id
   END) AS pipeline_eligible_distinct_memo_id_cnt,
   COUNT(DISTINCT m._join_memo_id) AS reusable_distinct_memo_id_cnt,
@@ -393,16 +426,20 @@ def create_or_replace_final_classification_view(
                     f"Existing object type could not be replaced: {object_type!r}."
                 ) from initial_error
 
-    source_row_count = spark.table(source_table).count()
+    eligible_source_count = spark.sql(
+        f"""SELECT COUNT(*) AS row_count
+        FROM {source_table} r
+        WHERE {_incentive_review_filter_sql('r')}"""
+    ).first()["row_count"]
     final_row_count = spark.table(final_view).count()
-    if source_row_count != final_row_count:
+    if eligible_source_count != final_row_count:
         raise ValueError(
-            "Final view row count must match the ODS source: "
-            f"source={source_row_count}, final={final_row_count}"
+            "Final view row count must match the incentive-eligible ODS source: "
+            f"eligible_source={eligible_source_count}, final={final_row_count}"
         )
     return {
         "source_table": source_table,
         "final_view": final_view,
-        "source_row_count": source_row_count,
+        "source_row_count": eligible_source_count,
         "final_row_count": final_row_count,
     }

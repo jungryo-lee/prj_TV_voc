@@ -30,11 +30,36 @@ source:
   raw_ods_table: kic_data_ods.intellytics_voc.intellytics_display_online_voc
   raw_mirror_table: sandbox.t_online_voc_analysis.intellytics_display_online_voc_raw
   final_tableau_view: sandbox.t_online_voc_analysis.intellytics_display_online_voc
+  # Delta Sharing contract: new ODS columns must not change the shared view schema.
+  final_tableau_source_columns:
+    - country_code
+    - country
+    - country_kr
+    - year
+    - post_no
+    - cate_1_depth
+    - cate_2_depth
+    - sentiment
+    - memo
+    - post_date
+    - brand_name
+    - model
+    - inch
+    - device_type
+    - site
+    - site_type
+    - region
+    - is_new_model
+    - is_lifestyle
+    - sc_measurement
+    - review_id
+    - source_id
   model_meta_table: sandbox.z_jungryo_lee.buzz_model_meta
   sentiment_source_table: sandbox.z_jungryo_lee.buzz_sc_score_dataset
   filters:
     raw_review_table:
       - is_lifestyle = 'N'
+      - UPPER(TRIM(CAST(incentive_review AS STRING))) = 'N'
       - sc_measurement IS NOT NULL
 
 reference:
