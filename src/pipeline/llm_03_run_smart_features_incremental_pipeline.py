@@ -1,12 +1,12 @@
 # Databricks notebook source
 # MAGIC %md
-# MAGIC # 12_1. Smart Features Incremental Classification
+# MAGIC # LLM 03. Run Smart Features Incremental Pipeline
 # MAGIC
 # MAGIC `Smart Features & User Experience (UX)` 카테고리만 대상으로 원천 전체 memo_id를 prototype ML로 분류하고, 저신뢰 건은 GPT mini fallback으로 확정합니다.
 # MAGIC
 # MAGIC - 입력: `raw_review_table` (`settings_intellytics.yaml` 기준 work view)
 # MAGIC - 대상: `cate_1_depth = Smart Features & User Experience (UX)`, `is_lifestyle = 'N'`, `sc_measurement in (1, -1)`
-# MAGIC - 전제: 10_1 source view refresh 완료
+# MAGIC - 전제: LLM 02 source view refresh 완료
 # MAGIC - 포함: Smart 부가 기능 alias 그룹 topic/sample/prototype 준비
 # MAGIC - 출력: `memo_embedding_unclassified`, `ml_classification_detail`, `llm_fallback_queue`
 # MAGIC - 재실행: `classification_detail_final`에 이미 있는 memo_id는 중복 처리하지 않음

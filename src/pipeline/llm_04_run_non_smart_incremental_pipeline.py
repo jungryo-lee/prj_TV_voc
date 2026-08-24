@@ -1,6 +1,6 @@
 # Databricks notebook source
 # MAGIC %md
-# MAGIC # 17_0. Run Non-Smart Incremental Classification
+# MAGIC # LLM 04. Run Non-Smart Incremental Pipeline
 # MAGIC 
 # MAGIC 비스마트 카테고리 전체를 대상으로, 아직 최종 분류되지 않은 memo_id만 주제분류를 점진 실행합니다.
 # MAGIC 
@@ -11,7 +11,7 @@
 # MAGIC - 저신뢰 fallback: GPT mini로 fallback queue 분류
 # MAGIC - 최종화: 신규 memo_id만 final detail에 append하고, topic group 생성
 # MAGIC 
-# MAGIC Smart Features 전수/부가 기능 alias 처리는 12_1 노트북에서 담당합니다.
+# MAGIC Smart Features 전수/부가 기능 alias 처리는 LLM 03 노트북에서 담당합니다.
 
 # COMMAND ----------
 import sys
