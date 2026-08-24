@@ -204,6 +204,7 @@ def load_labeled_memo_df(
     include_pred_topic_types: Iterable[str] | None = None,
     min_confidence_score: float | None = None,
     exclude_review_needed: bool | None = None,
+    group_filter_sql: str | None = None,
 ) -> DataFrame:
     """Load one labeled row per group/memo_id from classification output.
 
@@ -250,6 +251,8 @@ def load_labeled_memo_df(
         base_df = base_df.where(F.coalesce(F.col("is_latest"), F.lit(True)) == F.lit(True))
     if resolved_exclude_review_needed and "review_needed_yn" in base_df.columns:
         base_df = base_df.where(F.coalesce(F.col("review_needed_yn"), F.lit(False)) == F.lit(False))
+    if group_filter_sql:
+        base_df = base_df.where(F.expr(group_filter_sql))
 
     window = Window.partitionBy(
         "cate_1_depth",
@@ -586,6 +589,7 @@ def build_and_save_memo_embeddings_ai_query(
     min_confidence_score: float | None = None,
     limit_rows: int | None = None,
     skip_existing: bool = True,
+    group_filter_sql: str | None = None,
     created_by: str = "memo_embedding_ai_query",
 ) -> dict[str, Any]:
     """Load trusted labeled rows, embed with Databricks AI Query, and save."""
@@ -599,6 +603,7 @@ def build_and_save_memo_embeddings_ai_query(
         config,
         input_table_key=resolved_input_key,
         min_confidence_score=min_confidence_score,
+        group_filter_sql=group_filter_sql,
     )
     labeled_count = labeled_df.count()
     print(f"[memo_embedding_ai_query] labeled rows={labeled_count}")

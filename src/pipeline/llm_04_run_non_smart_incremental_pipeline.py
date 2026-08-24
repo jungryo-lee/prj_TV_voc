@@ -2,7 +2,8 @@
 # MAGIC %md
 # MAGIC # LLM 04. Run Non-Smart Incremental Pipeline
 # MAGIC 
-# MAGIC 비스마트 카테고리 전체를 대상으로, 아직 최종 분류되지 않은 memo_id만 주제분류를 점진 실행합니다.
+# MAGIC 비스마트 카테고리를 대상으로, 아직 최종 분류되지 않은 memo_id만 주제분류를 점진 실행합니다.
+# MAGIC `TARGET_GROUPS`에 그룹을 지정하면 설계부터 Final 저장·Topic Group까지 같은 소배치 범위만 처리합니다.
 # MAGIC 
 # MAGIC - 주제 설계: `gpt_55`로 rule profile / topic pool 생성 또는 기존 결과 재사용
 # MAGIC - 샘플 라벨: topic pool 기준 그룹별 100건을 `gpt_mini`로 분류
@@ -46,6 +47,7 @@ importlib.reload(final_builder)
 importlib.reload(topic_group_generator)
 
 from common.config_loader import load_config, get_output_table, get_reference_table, get_source_table, get_log_table
+from common.memo_id import with_memo_id
 from pipeline.run_taxonomy_classification_batch import run_taxonomy_classification_batch
 from ml.memo_embedding import build_and_save_memo_embeddings_ai_query
 from ml.topic_prototype import load_memo_embedding_df, build_topic_prototype_df, save_topic_prototypes
@@ -92,8 +94,9 @@ SAMPLE_LABEL_MODEL_KEY = "gpt_mini"
 FALLBACK_MODEL_KEY = "gpt_mini"
 EMBEDDING_MODEL = config["ml_classification"].get("embedding_model", "databricks-bge-large-en")
 
-# 필요 시 비용 안전장치로 LIMIT_GROUP_COUNT를 숫자로 줄여 먼저 검증하세요. 전체 실행은 None.
-LIMIT_GROUP_COUNT = None
+# 실행할 미완료 그룹을 자동으로 선택합니다. 한 번의 실행마다 3개 그룹만 처리합니다.
+# Final 저장까지 끝난 그룹은 다음 실행에서 제외되므로 수기 목록 관리가 필요 없습니다.
+BATCH_GROUP_COUNT = 3
 
 RUN_11_DESIGN_AND_SAMPLE = True
 RUN_11_5_EMBEDDING_AND_PROTOTYPE = True
@@ -114,19 +117,117 @@ source_key = config["ml_classification"].get("source_table_key", "raw_review_tab
 escaped_excluded = ", ".join("'" + item.replace("'", "''") + "'" for item in EXCLUDED_CATE_1_DEPTHS)
 sc_sql = "1, -1"
 
-# raw source filter: 비스마트 전체만 포함합니다.
-scope_filter = f"""
+
+def _sql_literal(value: str) -> str:
+    return "'" + str(value).replace("'", "''") + "'"
+
+
+def _target_groups_filter_sql(groups: list[tuple[str, str, int]]) -> str:
+    clauses = [
+        "(cate_1_depth = {cate_1} AND cate_2_depth = {cate_2} "
+        "AND CAST(sc_measurement AS INT) = {sc})".format(
+            cate_1=_sql_literal(cate_1),
+            cate_2=_sql_literal(cate_2),
+            sc=int(sc_measurement),
+        )
+        for cate_1, cate_2, sc_measurement in groups
+    ]
+    return "(" + " OR ".join(clauses) + ")"
+
+
+# 자동 선택 전의 원천 범위입니다. source 설정의 is_lifestyle/incentive_review 필터도 함께 적용합니다.
+base_scope_filter = f"""
 (
   cate_1_depth NOT IN ({escaped_excluded})
 )
 """.strip()
 
+raw_table_for_batch = get_source_table(config, source_key)
+final_detail_table_for_batch = get_output_table(config, "classification_detail_final")
+
+candidate_source_df = spark.table(raw_table_for_batch)
+for configured_filter in config["source"]["filters"].get(source_key, []):
+    candidate_source_df = candidate_source_df.where(F.expr(configured_filter))
+
+candidate_memo_df = (
+    candidate_source_df
+    .where(F.col("memo").isNotNull())
+    .where(F.length(F.trim(F.col("memo").cast("string"))) > 0)
+    .where(F.col("sc_measurement").cast("int").isin(1, -1))
+    .where(F.expr(base_scope_filter))
+    .select("cate_1_depth", "cate_2_depth", "sc_measurement", "memo")
+    .transform(with_memo_id)
+    .select("cate_1_depth", "cate_2_depth", "sc_measurement", "memo_id")
+    .dropDuplicates()
+)
+
+existing_final_keys_for_batch = load_existing_final_keys(spark, config)
+pending_memo_df = candidate_memo_df.join(
+    existing_final_keys_for_batch,
+    on=["cate_1_depth", "cate_2_depth", "sc_measurement", "memo_id"],
+    how="left_anti",
+)
+
+final_progress_df = (
+    spark.table(final_detail_table_for_batch)
+    .where(F.col("prompt_version") == config["version"]["prompt_version"])
+    .where(F.col("taxonomy_version") == config["version"]["taxonomy_version"])
+    .where(F.expr(base_scope_filter))
+    .groupBy("cate_1_depth", "cate_2_depth", "sc_measurement")
+    .agg(F.countDistinct("memo_id").alias("final_done_memo_cnt"))
+)
+
+auto_batch_group_df = (
+    pending_memo_df.groupBy("cate_1_depth", "cate_2_depth", "sc_measurement")
+    .agg(F.countDistinct("memo_id").alias("pending_distinct_memo_id_cnt"))
+    .join(
+        final_progress_df,
+        on=["cate_1_depth", "cate_2_depth", "sc_measurement"],
+        how="left",
+    )
+    .fillna({"final_done_memo_cnt": 0})
+    # Groups with fewer completed memo IDs are selected first. This rotates 500-row
+    # increments across groups instead of repeatedly exhausting the largest group.
+    .orderBy(
+        F.col("final_done_memo_cnt").asc(),
+        F.col("pending_distinct_memo_id_cnt").desc(),
+        F.col("cate_1_depth").asc(),
+        F.col("cate_2_depth").asc(),
+        F.col("sc_measurement").asc(),
+    )
+    .limit(BATCH_GROUP_COUNT)
+)
+
+TARGET_GROUPS = [
+    (row["cate_1_depth"], row["cate_2_depth"], int(row["sc_measurement"]))
+    for row in auto_batch_group_df.collect()
+]
+
+if not TARGET_GROUPS:
+    raise SystemExit(
+        "No pending Non-Smart memo_id groups remain. Run LLM 10 to refresh Tableau if needed."
+    )
+
+print("[auto_batch] selected target groups")
+display(auto_batch_group_df)
+
+target_groups_filter = _target_groups_filter_sql(TARGET_GROUPS)
+
+# Every downstream stage receives the same three selected groups.
+scope_filter = f"""
+({base_scope_filter})
+AND ({target_groups_filter})
+""".strip()
+
 # output table filter: 비스마트 전체만 포함합니다.
 output_scope_sql = f"""
-(
-  cate_1_depth NOT IN ({escaped_excluded})
-)
+({base_scope_filter})
+AND ({target_groups_filter})
 """.strip()
+
+# The source is already limited to the selected groups, so this is an additional
+# guard for taxonomy design and sample-labeling calls.
+LIMIT_GROUP_COUNT = len(TARGET_GROUPS)
 
 config.setdefault("source", {}).setdefault("filters", {}).setdefault(source_key, [])
 config["source"]["filters"][source_key].append(scope_filter)
@@ -156,6 +257,8 @@ print({
     "sample_label_model_key": SAMPLE_LABEL_MODEL_KEY,
     "label_model_version": LABEL_MODEL_VERSION,
     "fallback_model_key": FALLBACK_MODEL_KEY,
+    "batch_group_count": BATCH_GROUP_COUNT,
+    "target_groups": TARGET_GROUPS,
     "limit_group_count": LIMIT_GROUP_COUNT,
     "source_filters": config["source"]["filters"][source_key],
 })
@@ -298,6 +401,7 @@ if RUN_11_5_EMBEDDING_AND_PROTOTYPE:
         embedding_model=EMBEDDING_MODEL,
         limit_rows=None,
         skip_existing=SKIP_EXISTING,
+        group_filter_sql=output_scope_sql,
         created_by="non_smart_labeled_embedding",
     )
 
@@ -500,14 +604,36 @@ final_result
 # COMMAND ----------
 # 6. 주제 그룹핑: 이미 그룹핑된 그룹은 skip하고, 신규 topic_pool 그룹만 GPT-5-5로 그룹핑합니다.
 if RUN_14_TOPIC_GROUPING:
-    topic_group_result = generate_and_save_topic_groups(
-        spark,
-        config,
-        limit_groups=None,
-        model_key=DESIGN_MODEL_KEY,
-        skip_existing=True,
-        write_mode="replace_groups",
-    )
+    if TARGET_GROUPS:
+        target_group_results = []
+        for target_cate_1, target_cate_2, target_sc_measurement in TARGET_GROUPS:
+            target_group_results.append(
+                generate_and_save_topic_groups(
+                    spark,
+                    config,
+                    cate_1_depth=target_cate_1,
+                    cate_2_depth=target_cate_2,
+                    sc_measurement=int(target_sc_measurement),
+                    model_key=DESIGN_MODEL_KEY,
+                    skip_existing=True,
+                    write_mode="replace_groups",
+                )
+            )
+        topic_group_result = {
+            "target_groups": TARGET_GROUPS,
+            "group_count": sum(item["group_count"] for item in target_group_results),
+            "topic_group_row_count": sum(item["topic_group_row_count"] for item in target_group_results),
+            "details": target_group_results,
+        }
+    else:
+        topic_group_result = generate_and_save_topic_groups(
+            spark,
+            config,
+            limit_groups=None,
+            model_key=DESIGN_MODEL_KEY,
+            skip_existing=True,
+            write_mode="replace_groups",
+        )
 else:
     topic_group_result = {"skipped": True}
 
