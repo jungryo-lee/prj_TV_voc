@@ -245,6 +245,9 @@ def _append_generation_log(spark: SparkSession, rows: list[dict[str, Any]], tabl
 def _upsert_insights(spark: SparkSession, rows: list[dict[str, Any]], table: str) -> int:
     """Update only successful scopes so a failed refresh cannot remove prior cards."""
     if not rows:
+        # The Tableau contract is stable even when no profile is currently eligible.
+        if not spark.catalog.tableExists(table):
+            spark.createDataFrame([], schema=INSIGHT_SCHEMA).write.format("delta").mode("overwrite").saveAsTable(table)
         return 0
     df = spark.createDataFrame(rows, schema=INSIGHT_SCHEMA)
     count = df.count()
