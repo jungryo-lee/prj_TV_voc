@@ -97,6 +97,10 @@ tables:
     weighted_network_edges: sandbox.z_jungryo_lee.tv_voc_weighted_network_edges_intellytics
     driver_selection: sandbox.z_jungryo_lee.tv_voc_driver_selection_intellytics
     driver_ai_insight: sandbox.z_jungryo_lee.tv_voc_driver_ai_insight_intellytics
+    # Tableau AI card marts. Insight combines confidence, summary, and implication.
+    driver_card_insight: sandbox.z_jungryo_lee.tv_voc_driver_card_insight_intellytics
+    driver_card_driver: sandbox.z_jungryo_lee.tv_voc_driver_card_driver_intellytics
+    driver_card_generation_log: sandbox.z_jungryo_lee.tv_voc_driver_card_generation_log_intellytics
     ai_insight: sandbox.z_jungryo_lee.tv_voc_ai_insight_intellytics
     dashboard_export: sandbox.z_jungryo_lee.tv_voc_dashboard_export_intellytics
 
@@ -160,6 +164,19 @@ driver_ai_insight:
   max_drivers_in_context: 3
   max_correlations_in_context: 3
   max_group_keys_in_context: 10
+
+driver_dashboard_cards:
+  model_key: sonnet_46
+  prompt_version: v2_staged_driver_dashboard_cards
+  min_y_obs: 30
+  min_adj_r_squared: 0.30
+  max_model_p_value: 0.05
+  max_condition_number: 30
+  min_abs_coef: 0.10
+  max_coef_p_value: 0.05
+  min_abs_weighted_corr: 0.30
+  max_items_per_card: 3
+  reuse_unchanged: true
 
 metadata_columns:
   run_id: run_id
