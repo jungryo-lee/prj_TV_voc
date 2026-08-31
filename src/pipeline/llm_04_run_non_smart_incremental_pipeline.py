@@ -49,6 +49,7 @@ importlib.reload(topic_group_generator)
 importlib.reload(topic_lifecycle)
 
 from common.config_loader import load_config, get_output_table, get_reference_table, get_source_table, get_log_table
+from common.category_alias import apply_category_aliases
 from common.memo_id import with_memo_id
 from pipeline.run_taxonomy_classification_batch import run_taxonomy_classification_batch
 from ml.memo_embedding import build_and_save_memo_embeddings_ai_query
@@ -120,6 +121,10 @@ SKIP_EXISTING = True
 CONTINUE_ON_GROUP_FAILURE = True
 RESET_FAILED_CHECKPOINT_ROWS = False
 
+# LLM 00 must run first. Only groups whose source/category change check says
+# reuse or refresh_prototype are eligible for automatic incremental labeling.
+REQUIRE_READINESS_CHECK = True
+
 PROMPT_VERSION = config["version"]["prompt_version"]
 TAXONOMY_VERSION = config["version"]["taxonomy_version"]
 LABEL_MODEL_VERSION = config["llm"]["models"][SAMPLE_LABEL_MODEL_KEY]["model_version"]
@@ -156,7 +161,7 @@ base_scope_filter = f"""
 raw_table_for_batch = get_source_table(config, source_key)
 final_detail_table_for_batch = get_output_table(config, "classification_detail_final")
 
-candidate_source_df = spark.table(raw_table_for_batch)
+candidate_source_df = apply_category_aliases(spark.table(raw_table_for_batch), config)
 for configured_filter in config["source"]["filters"].get(source_key, []):
     candidate_source_df = candidate_source_df.where(F.expr(configured_filter))
 
@@ -178,6 +183,39 @@ pending_memo_df = candidate_memo_df.join(
     on=["cate_1_depth", "cate_2_depth", "sc_measurement", "memo_id"],
     how="left_anti",
 )
+
+readiness_table_for_batch = get_output_table(config, "taxonomy_readiness")
+if REQUIRE_READINESS_CHECK:
+    if not spark.catalog.tableExists(readiness_table_for_batch):
+        raise SystemExit(
+            "Taxonomy readiness table is missing. Run LLM 00 before LLM 04 "
+            "to validate source-category changes and taxonomy suitability."
+        )
+    readiness_window = Window.partitionBy(
+        "cate_1_depth", "cate_2_depth", "sc_measurement"
+    ).orderBy(F.col("created_at").desc_nulls_last())
+    latest_readiness_df = (
+        spark.table(readiness_table_for_batch)
+        .where(F.col("prompt_version") == PROMPT_VERSION)
+        .where(F.col("taxonomy_version") == TAXONOMY_VERSION)
+        .withColumn("_rn", F.row_number().over(readiness_window))
+        .where(F.col("_rn") == 1)
+        .select(
+            "cate_1_depth",
+            "cate_2_depth",
+            "sc_measurement",
+            "readiness_status",
+            "incremental_processing_allowed",
+        )
+    )
+    print("[taxonomy_readiness] latest status")
+    display(latest_readiness_df.groupBy("readiness_status", "incremental_processing_allowed").count())
+    allowed_readiness_df = latest_readiness_df.where(F.col("incremental_processing_allowed"))
+    pending_memo_df = pending_memo_df.join(
+        allowed_readiness_df.select("cate_1_depth", "cate_2_depth", "sc_measurement"),
+        on=["cate_1_depth", "cate_2_depth", "sc_measurement"],
+        how="left_semi",
+    )
 
 final_progress_df = (
     spark.table(final_detail_table_for_batch)

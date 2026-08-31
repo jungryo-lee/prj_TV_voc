@@ -80,6 +80,8 @@ tables:
     topic_monthly_health: sandbox.z_jungryo_lee.tv_voc_topic_monthly_health_intellytics
     topic_active_mapping: sandbox.z_jungryo_lee.tv_voc_topic_active_mapping_intellytics
     topic_new_candidate: sandbox.z_jungryo_lee.tv_voc_topic_new_candidate_intellytics
+    source_taxonomy_snapshot: sandbox.z_jungryo_lee.tv_voc_source_taxonomy_snapshot_intellytics
+    taxonomy_readiness: sandbox.z_jungryo_lee.tv_voc_taxonomy_readiness_intellytics
     classification_detail: sandbox.z_jungryo_lee.tv_voc_classification_detail_intellytics
     classification_full: sandbox.z_jungryo_lee.tv_voc_classification_full_intellytics
     classification_summary: sandbox.z_jungryo_lee.tv_voc_classification_summary_intellytics
@@ -350,6 +352,15 @@ taxonomy_lifecycle:
   low_topic_consecutive_months: 2
   new_topic_candidate_min_distinct_memo_ids: 50
   protected_topics: []
+
+taxonomy_readiness:
+  enabled: true
+  source_snapshot_table_key: source_taxonomy_snapshot
+  output_table_key: taxonomy_readiness
+  category_move_ratio_threshold: 0.05
+  sample_others_ratio_threshold: 0.15
+  min_topic_pool_count: 3
+  allowed_incremental_statuses: [reuse, refresh_prototype]
 
 topic_prototype:
   enabled: true
