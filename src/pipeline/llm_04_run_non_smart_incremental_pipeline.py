@@ -8,7 +8,7 @@
 # MAGIC - 주제 설계: `gpt_55`로 rule profile / topic pool 생성 또는 기존 결과 재사용
 # MAGIC - 샘플 라벨: topic pool 기준 그룹별 100건을 `gpt_mini`로 분류
 # MAGIC - Prototype: 샘플 라벨 embedding 기반 topic prototype 생성
-# MAGIC - 전수/증분 분류: `classification_detail_final`에 아직 없는 memo_id 중 그룹별 최대 500건 분류
+# MAGIC - 전수/증분 분류: `classification_detail_final`에 아직 없는 memo_id 중 그룹별 최대 200건 분류
 # MAGIC - 저신뢰 fallback: GPT mini로 fallback queue 분류
 # MAGIC - 최종화: 신규 memo_id만 final detail에 append하고, topic group 생성
 # MAGIC 
@@ -36,6 +36,7 @@ import pipeline.run_ml_topic_classification as ml_batch
 import ml.topic_ml_classifier as topic_ml_classifier
 import ml.final_classification_builder as final_builder
 import taxonomy.topic_group_generator as topic_group_generator
+import taxonomy.topic_lifecycle as topic_lifecycle
 
 importlib.reload(config_loader)
 importlib.reload(taxonomy_batch)
@@ -45,12 +46,17 @@ importlib.reload(ml_batch)
 importlib.reload(topic_ml_classifier)
 importlib.reload(final_builder)
 importlib.reload(topic_group_generator)
+importlib.reload(topic_lifecycle)
 
 from common.config_loader import load_config, get_output_table, get_reference_table, get_source_table, get_log_table
 from common.memo_id import with_memo_id
 from pipeline.run_taxonomy_classification_batch import run_taxonomy_classification_batch
 from ml.memo_embedding import build_and_save_memo_embeddings_ai_query
-from ml.topic_prototype import load_memo_embedding_df, build_topic_prototype_df, save_topic_prototypes
+from ml.topic_prototype import (
+    load_memo_embedding_df,
+    build_topic_prototype_df,
+    replace_topic_prototypes_for_groups,
+)
 from pipeline.run_ml_topic_classification import run_ml_topic_classification
 from ml.topic_ml_classifier import (
     load_pending_llm_fallback_queue,
@@ -63,6 +69,7 @@ from ml.final_classification_builder import (
     save_final_classification_detail,
 )
 from taxonomy.topic_group_generator import generate_and_save_topic_groups
+from taxonomy.topic_lifecycle import refresh_topic_lifecycle
 
 base_config = load_config(f"{PROJECT_ROOT}/config/settings_intellytics.yaml")
 config = copy.deepcopy(base_config)
@@ -86,13 +93,17 @@ PROMPT_MEMO_ROWS = 200
 # topic pool 기준 샘플 주제분류 건수입니다.
 SAMPLE_CLASSIFICATION_ROWS_PER_GROUP = 100
 
-# ML/prototype 분류는 아직 처리되지 않은 memo_id 중 그룹별 최대 500건씩 증분 처리합니다.
-ML_ROWS_PER_GROUP = 500
+# ML/prototype 분류는 아직 처리되지 않은 memo_id 중 그룹별 최대 200건씩 증분 처리합니다.
+ML_ROWS_PER_GROUP = 200
 
 DESIGN_MODEL_KEY = "gpt_55"
 SAMPLE_LABEL_MODEL_KEY = "gpt_mini"
 FALLBACK_MODEL_KEY = "gpt_mini"
 EMBEDDING_MODEL = config["ml_classification"].get("embedding_model", "databricks-bge-large-en")
+
+# GPT mini fallback is saved at this interval. A later JSON/API failure can
+# re-run only the unfinished chunk; already saved memo_ids are skipped.
+FALLBACK_SAVE_BATCH_SIZE = 50
 
 # 실행할 미완료 그룹을 자동으로 선택합니다. 한 번의 실행마다 3개 그룹만 처리합니다.
 # Final 저장까지 끝난 그룹은 다음 실행에서 제외되므로 수기 목록 관리가 필요 없습니다.
@@ -186,7 +197,7 @@ auto_batch_group_df = (
         how="left",
     )
     .fillna({"final_done_memo_cnt": 0})
-    # Groups with fewer completed memo IDs are selected first. This rotates 500-row
+    # Groups with fewer completed memo IDs are selected first. This rotates 200-row
     # increments across groups instead of repeatedly exhausting the largest group.
     .orderBy(
         F.col("final_done_memo_cnt").asc(),
@@ -257,6 +268,7 @@ print({
     "sample_label_model_key": SAMPLE_LABEL_MODEL_KEY,
     "label_model_version": LABEL_MODEL_VERSION,
     "fallback_model_key": FALLBACK_MODEL_KEY,
+    "fallback_save_batch_size": FALLBACK_SAVE_BATCH_SIZE,
     "batch_group_count": BATCH_GROUP_COUNT,
     "target_groups": TARGET_GROUPS,
     "limit_group_count": LIMIT_GROUP_COUNT,
@@ -345,7 +357,7 @@ SELECT
   COALESCE(tg.topic_group_cnt, 0) AS topic_group_cnt,
   CASE WHEN COALESCE(s.sample_detail_memo_cnt, 0) > 0 THEN 1 ELSE 0 END AS has_sample_detail,
   CASE WHEN COALESCE(p.prototype_topic_cnt, 0) > 0 THEN 1 ELSE 0 END AS has_prototype,
-  CASE WHEN COALESCE(md.ml_done_memo_cnt, 0) >= {ML_ROWS_PER_GROUP} THEN 1 ELSE 0 END AS has_first_500_ml,
+  CASE WHEN COALESCE(md.ml_done_memo_cnt, 0) >= {ML_ROWS_PER_GROUP} THEN 1 ELSE 0 END AS has_first_batch_ml,
   CASE WHEN COALESCE(fd.final_done_memo_cnt, 0) > 0 THEN 1 ELSE 0 END AS has_final,
   CASE WHEN COALESCE(tg.topic_group_cnt, 0) > 0 THEN 1 ELSE 0 END AS has_topic_group
 FROM raw_group r
@@ -357,7 +369,7 @@ LEFT JOIN topic_group_done tg USING (cate_1_depth, cate_2_depth, sc_measurement)
 LEFT JOIN {category_mapping_table} m
   ON r.cate_1_depth = m.cate_1_depth
  AND r.cate_2_depth = m.cate_2_depth
-ORDER BY has_final, has_topic_group, has_prototype, has_sample_detail, has_first_500_ml,
+ORDER BY has_final, has_topic_group, has_prototype, has_sample_detail, has_first_batch_ml,
          r.cate_1_depth, r.cate_2_depth, r.sc_measurement
 """
 
@@ -391,9 +403,9 @@ else:
 design_sample_result
 
 # COMMAND ----------
-# 2. 샘플 라벨 embedding + topic prototype 생성
+# 2. 샘플 및 확정 라벨 embedding + topic prototype 생성
 if RUN_11_5_EMBEDDING_AND_PROTOTYPE:
-    embedding_result = build_and_save_memo_embeddings_ai_query(
+    sample_embedding_result = build_and_save_memo_embeddings_ai_query(
         spark,
         config,
         input_table_key="classification_detail",
@@ -403,6 +415,20 @@ if RUN_11_5_EMBEDDING_AND_PROTOTYPE:
         skip_existing=SKIP_EXISTING,
         group_filter_sql=output_scope_sql,
         created_by="non_smart_labeled_embedding",
+    )
+
+    # Newly finalized GPT-mini labels and ML labels that meet the configured
+    # 0.90 confidence plus Top-2 margin condition become future teachers.
+    final_embedding_result = build_and_save_memo_embeddings_ai_query(
+        spark,
+        config,
+        input_table_key="classification_detail_final",
+        output_table_key="memo_embedding",
+        embedding_model=EMBEDDING_MODEL,
+        limit_rows=None,
+        skip_existing=SKIP_EXISTING,
+        group_filter_sql=output_scope_sql,
+        created_by="non_smart_final_label_embedding",
     )
 
     embedding_df = (
@@ -439,41 +465,19 @@ if RUN_11_5_EMBEDDING_AND_PROTOTYPE:
         min_topic_memo_count=config["topic_prototype"].get("min_topic_memo_count", 3),
     )
 
-    prototype_table = get_output_table(config, "topic_prototype")
-    if spark.catalog.tableExists(prototype_table):
-        existing_prototype_groups = (
-            spark.table(prototype_table)
-            .where(F.col("prompt_version") == PROMPT_VERSION)
-            .where(F.col("taxonomy_version") == TAXONOMY_VERSION)
-            .where(F.col("model_version") == LABEL_MODEL_VERSION)
-            .where(F.col("embedding_model") == EMBEDDING_MODEL)
-            .where(F.expr(output_scope_sql))
-            .select("cate_1_depth", "cate_2_depth", "sc_measurement")
-            .dropDuplicates()
-        )
-        prototype_df = prototype_df.join(
-            existing_prototype_groups,
-            on=["cate_1_depth", "cate_2_depth", "sc_measurement"],
-            how="left_anti",
-        )
-        prototype_save_mode = "append"
-    else:
-        prototype_save_mode = "overwrite"
-
     prototype_count = prototype_df.count()
-    if prototype_count > 0:
-        prototype_saved_table = save_topic_prototypes(
-            prototype_df,
-            config,
-            output_table_key="topic_prototype",
-            mode=prototype_save_mode,
-        )
-    else:
-        prototype_saved_table = prototype_table
+    prototype_saved_table = replace_topic_prototypes_for_groups(
+        spark,
+        prototype_df,
+        config,
+        target_groups=TARGET_GROUPS,
+        output_table_key="topic_prototype",
+    )
 
     prototype_result = {
-        "embedding_result": embedding_result,
-        "new_prototype_count": prototype_count,
+        "sample_embedding_result": sample_embedding_result,
+        "final_embedding_result": final_embedding_result,
+        "refreshed_prototype_count": prototype_count,
         "prototype_table": prototype_saved_table,
     }
 else:
@@ -482,7 +486,7 @@ else:
 prototype_result
 
 # COMMAND ----------
-# 3. 아직 처리되지 않은 memo_id 중 그룹별 최대 500건 ML/prototype 분류
+# 3. 아직 처리되지 않은 memo_id 중 그룹별 최대 200건 ML/prototype 분류
 if RUN_12_ML:
     ml_result = run_ml_topic_classification(
         spark,
@@ -535,29 +539,56 @@ if RUN_GPT_MINI_FALLBACK:
     pending_fallback_count = queue_df.count()
     print("pending_fallback_count =", pending_fallback_count)
 
-    fallback_df = classify_llm_fallback_queue_df(
-        spark,
-        config,
-        queue_df=queue_df,
-        model_key=FALLBACK_MODEL_KEY,
-        created_by="non_smart_gpt_mini_fallback",
-    )
-    fallback_count = fallback_df.count()
+    # Checkpoint every 50 rows. If one chunk raises an LLM/JSON error, all
+    # earlier chunks have already been appended and are skipped on rerun.
+    pending_fallback_rows = [row.asDict(recursive=True) for row in queue_df.collect()]
+    fallback_count = 0
+    fallback_saved_table = get_output_table(config, "ml_classification_detail")
+    fallback_chunk_results = []
 
-    if fallback_count > 0:
-        fallback_saved_table = save_ml_classification(
-            fallback_df,
-            config,
-            output_table_key="ml_classification_detail",
-            mode="append",
+    for batch_start in range(0, len(pending_fallback_rows), FALLBACK_SAVE_BATCH_SIZE):
+        batch_end = min(batch_start + FALLBACK_SAVE_BATCH_SIZE, len(pending_fallback_rows))
+        batch_df = spark.createDataFrame(
+            pending_fallback_rows[batch_start:batch_end],
+            schema=queue_df.schema,
         )
-    else:
-        fallback_saved_table = get_output_table(config, "ml_classification_detail")
+        print(
+            "[gpt_mini_fallback_checkpoint] "
+            f"start={batch_start + 1} end={batch_end} total={len(pending_fallback_rows)}"
+        )
+        fallback_df = classify_llm_fallback_queue_df(
+            spark,
+            config,
+            queue_df=batch_df,
+            model_key=FALLBACK_MODEL_KEY,
+            created_by="non_smart_gpt_mini_fallback",
+        )
+        batch_count = fallback_df.count()
+        if batch_count > 0:
+            fallback_saved_table = save_ml_classification(
+                fallback_df,
+                config,
+                output_table_key="ml_classification_detail",
+                mode="append",
+            )
+        fallback_count += batch_count
+        fallback_chunk_results.append(
+            {
+                "start": batch_start + 1,
+                "end": batch_end,
+                "saved_count": batch_count,
+            }
+        )
+        print(
+            "[gpt_mini_fallback_checkpoint] "
+            f"saved={batch_count} cumulative_saved={fallback_count}"
+        )
 
     fallback_result = {
         "pending_fallback_count": pending_fallback_count,
         "fallback_count": fallback_count,
         "fallback_saved_table": fallback_saved_table,
+        "fallback_chunk_results": fallback_chunk_results,
     }
 else:
     fallback_result = {"skipped": True}
@@ -638,6 +669,22 @@ else:
     topic_group_result = {"skipped": True}
 
 topic_group_result
+
+# COMMAND ----------
+# 6.5 월별 Topic 상태 및 활성 Taxonomy 매핑 갱신
+# Final detail의 원본 라벨은 절대 수정하지 않습니다. 저비중 Topic은 두 월
+# 연속 조건을 충족할 때 활성 매핑에서만 기타로 해석됩니다.
+if RUN_13_FINALIZE:
+    lifecycle_result = refresh_topic_lifecycle(
+        spark,
+        config,
+        target_groups=TARGET_GROUPS,
+        created_by="non_smart_topic_lifecycle",
+    )
+else:
+    lifecycle_result = {"skipped": True}
+
+lifecycle_result
 
 # COMMAND ----------
 # 7. 실행 후 그룹별 처리 현황 확인

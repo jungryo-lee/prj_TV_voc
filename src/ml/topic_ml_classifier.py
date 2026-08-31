@@ -859,17 +859,26 @@ def classify_llm_fallback_queue_df(
             f"{idx}/{len(source_rows)} | {cate_1_depth} | {cate_2_depth} | {sc_measurement}"
         )
 
-        decision = apply_llm_fallback(
-            str(row.get("memo") or row.get("memo_norm") or ""),
-            cate_1_depth=cate_1_depth,
-            cate_2_depth=cate_2_depth,
-            sc_measurement=sc_measurement,
-            rule_profile=rule_profile,
-            topic_pool=topic_pool,
-            candidate_topics=candidate_topics,
-            config=config,
-            model_key=resolved_model_key,
-        )
+        try:
+            decision = apply_llm_fallback(
+                str(row.get("memo") or row.get("memo_norm") or ""),
+                cate_1_depth=cate_1_depth,
+                cate_2_depth=cate_2_depth,
+                sc_measurement=sc_measurement,
+                rule_profile=rule_profile,
+                topic_pool=topic_pool,
+                candidate_topics=candidate_topics,
+                config=config,
+                model_key=resolved_model_key,
+            )
+        except Exception as exc:
+            # Keep only successful decisions in this checkpoint. A failed memo
+            # has no final row, so the next run retries that memo only.
+            print(
+                "[gpt_mini_fallback] deferred retry | "
+                f"memo_id={row.get('memo_id')} | error={exc!r}"
+            )
+            continue
         decision = rescue_others_from_match_reason(decision, topic_pool=topic_pool)
 
         output_rows.append(

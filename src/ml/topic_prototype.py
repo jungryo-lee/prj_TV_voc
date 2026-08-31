@@ -211,6 +211,64 @@ def save_topic_prototypes(
     return table_name
 
 
+def replace_topic_prototypes_for_groups(
+    spark: SparkSession,
+    prototype_df: DataFrame,
+    config: dict[str, Any],
+    *,
+    target_groups: list[tuple[str, str, int]],
+    output_table_key: str | None = None,
+) -> str:
+    """Refresh prototypes for only the supplied category/sentiment groups.
+
+    Replacing a complete group prevents an old sparse Topic prototype from
+    remaining eligible after the trusted label set has changed. Historical
+    labels and prototypes for every other group remain untouched.
+    """
+    cfg = _prototype_cfg(config)
+    table_name = get_output_table(config, output_table_key or cfg["output_table_key"])
+    if not target_groups:
+        return table_name
+
+    # Keep the last valid prototype set if a new batch has too few trusted
+    # labels to build even one prototype. This prevents a transient upstream
+    # failure from turning a previously classifiable group into a no-prototype
+    # group.
+    if prototype_df.limit(1).count() == 0:
+        return table_name
+
+    if spark.catalog.tableExists(table_name):
+        version_cfg = config.get("version", {}) or {}
+        llm_models = (config.get("llm", {}) or {}).get("models", {}) or {}
+        model_key = (config.get("app", {}) or {}).get("model_key", "gpt_55")
+        values = {
+            "prompt_version": str(version_cfg.get("prompt_version", "")),
+            "taxonomy_version": str(version_cfg.get("taxonomy_version", "")),
+            "model_version": str(llm_models.get(model_key, {}).get("model_version", version_cfg.get("model_version", ""))),
+            "embedding_model": str(_embedding_model_filter(config) or ""),
+        }
+        values = {key: value.replace("'", "''") for key, value in values.items()}
+        group_conditions = []
+        for cate_1_depth, cate_2_depth, sc_measurement in target_groups:
+            c1 = str(cate_1_depth).replace("'", "''")
+            c2 = str(cate_2_depth).replace("'", "''")
+            group_conditions.append(
+                f"(cate_1_depth = '{c1}' AND cate_2_depth = '{c2}' "
+                f"AND sc_measurement = {int(sc_measurement)})"
+            )
+        spark.sql(
+            f"""DELETE FROM {table_name}
+            WHERE prompt_version = '{values['prompt_version']}'
+              AND taxonomy_version = '{values['taxonomy_version']}'
+              AND model_version = '{values['model_version']}'
+              AND embedding_model = '{values['embedding_model']}'
+              AND ({' OR '.join(group_conditions)})"""
+        )
+
+    prototype_df.write.format("delta").mode("append").option("mergeSchema", "true").saveAsTable(table_name)
+    return table_name
+
+
 def _similarity_expr(query_col: str = "q.embedding", prototype_col: str = "p.prototype_embedding") -> str:
     """Return SQL expression for dot-product similarity."""
     return (

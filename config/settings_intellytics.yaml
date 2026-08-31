@@ -75,6 +75,11 @@ tables:
     clue_keyword: sandbox.z_jungryo_lee.tv_voc_clue_keyword_intellytics
     topic_pool: sandbox.z_jungryo_lee.tv_voc_topic_pool_intellytics
     topic_group: sandbox.z_jungryo_lee.tv_voc_topic_group_intellytics
+    # Operational lifecycle tables. Tableau's shared view keeps its schema and
+    # only resolves the existing pred_topic/topic_group values through these.
+    topic_monthly_health: sandbox.z_jungryo_lee.tv_voc_topic_monthly_health_intellytics
+    topic_active_mapping: sandbox.z_jungryo_lee.tv_voc_topic_active_mapping_intellytics
+    topic_new_candidate: sandbox.z_jungryo_lee.tv_voc_topic_new_candidate_intellytics
     classification_detail: sandbox.z_jungryo_lee.tv_voc_classification_detail_intellytics
     classification_full: sandbox.z_jungryo_lee.tv_voc_classification_full_intellytics
     classification_summary: sandbox.z_jungryo_lee.tv_voc_classification_summary_intellytics
@@ -329,9 +334,22 @@ memo_embedding:
   batch_size: 64
   heuristic_label_min_confidence_score: 0.6
   ml_auto_label_min_confidence_score: 0.9
-  include_pred_topic_types: [topic, overall]
+  ml_auto_label_min_similarity_margin: 0.05
+  include_pred_topic_types: [topic]
   exclude_review_needed: true
   text_col: memo_norm
+
+taxonomy_lifecycle:
+  enabled: true
+  health_table_key: topic_monthly_health
+  active_mapping_table_key: topic_active_mapping
+  new_candidate_table_key: topic_new_candidate
+  min_group_labeled_memo_count: 2000
+  others_ratio_threshold: 0.15
+  low_topic_share_threshold: 0.01
+  low_topic_consecutive_months: 2
+  new_topic_candidate_min_distinct_memo_ids: 50
+  protected_topics: []
 
 topic_prototype:
   enabled: true

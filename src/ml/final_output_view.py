@@ -109,14 +109,17 @@ def build_final_classification_view_sql(
     final_view_key: str = "final_tableau_view",
     final_detail_table_key: str = "classification_detail_final",
     topic_group_table_key: str = "topic_group",
+    active_mapping_table_key: str = "topic_active_mapping",
     final_detail_exists: bool = True,
     topic_group_exists: bool = True,
+    active_mapping_exists: bool = True,
 ) -> str:
     """Return SQL for an incentive-eligible source view with two added label columns."""
     source_table = get_source_table(config, source_table_key)
     final_view = get_source_table(config, final_view_key)
     final_detail_table = get_output_table(config, final_detail_table_key)
     topic_group_table = get_output_table(config, topic_group_table_key)
+    active_mapping_table = get_output_table(config, active_mapping_table_key)
 
     source_with_keys_sql = _source_with_keys_sql(
         config,
@@ -142,6 +145,24 @@ def build_final_classification_view_sql(
     FROM {topic_group_table} g
   ) ranked
   WHERE _rn = 1""" if topic_group_exists else _empty_topic_group_sql()
+    active_mapping_latest_sql = f"""SELECT *
+  FROM (
+    SELECT
+      a.cate_1_depth,
+      a.cate_2_depth,
+      a.sc_measurement,
+      a.source_topic,
+      a.active_topic,
+      a.active_topic_type,
+      a.active_topic_group,
+      ROW_NUMBER() OVER (
+        PARTITION BY a.cate_1_depth, a.cate_2_depth, a.sc_measurement, a.source_topic
+        ORDER BY a.created_at DESC, a.effective_from_month DESC
+      ) AS _rn
+    FROM {active_mapping_table} a
+    WHERE a.is_active = true
+  ) ranked
+  WHERE _rn = 1""" if active_mapping_exists else _empty_active_mapping_sql()
     source_projection_sql = _final_view_source_projection_sql(config, "s")
 
     return f"""
@@ -152,14 +173,21 @@ WITH source_with_keys AS (
   {final_latest_sql}
 ), topic_group_latest AS (
   {topic_group_latest_sql}
+), active_mapping_latest AS (
+  {active_mapping_latest_sql}
 )
 SELECT
   {source_projection_sql},
-  f.pred_topic,
+  CASE
+    WHEN f.pred_topic IS NULL THEN NULL
+    WHEN f.pred_topic_type IN ('overall', 'others', 'unclassified') THEN f.pred_topic
+    ELSE COALESCE(a.active_topic, f.pred_topic)
+  END AS pred_topic,
   CASE
     WHEN f.pred_topic IS NULL THEN NULL
     WHEN f.pred_topic_type IN ('overall', 'others', 'unclassified') THEN '기타'
-    ELSE COALESCE(g.topic_group, '기타')
+    WHEN COALESCE(a.active_topic_type, f.pred_topic_type) = 'others' THEN '기타'
+    ELSE COALESCE(a.active_topic_group, g.topic_group, '기타')
   END AS topic_group
 FROM source_with_keys s
 LEFT JOIN final_latest f
@@ -173,6 +201,11 @@ LEFT JOIN topic_group_latest g
  AND f.cate_2_depth = g.cate_2_depth
  AND CAST(f.sc_measurement AS INT) = CAST(g.sc_measurement AS INT)
  AND f.pred_topic = g.topic
+LEFT JOIN active_mapping_latest a
+  ON f.cate_1_depth = a.cate_1_depth
+ AND f.cate_2_depth = a.cate_2_depth
+ AND CAST(f.sc_measurement AS INT) = CAST(a.sc_measurement AS INT)
+ AND f.pred_topic = a.source_topic
 """.strip()
 
 
@@ -370,6 +403,19 @@ def _empty_topic_group_sql() -> str:
 WHERE 1 = 0"""
 
 
+def _empty_active_mapping_sql() -> str:
+    """Return a typed empty CTE when no active taxonomy mapping exists yet."""
+    return """SELECT
+  CAST(NULL AS STRING) AS cate_1_depth,
+  CAST(NULL AS STRING) AS cate_2_depth,
+  CAST(NULL AS INT) AS sc_measurement,
+  CAST(NULL AS STRING) AS source_topic,
+  CAST(NULL AS STRING) AS active_topic,
+  CAST(NULL AS STRING) AS active_topic_type,
+  CAST(NULL AS STRING) AS active_topic_group
+WHERE 1 = 0"""
+
+
 def create_or_replace_final_classification_view(
     spark: SparkSession,
     config: dict[str, Any],
@@ -381,10 +427,12 @@ def create_or_replace_final_classification_view(
     source_table = get_source_table(config, "raw_ods_table")
     final_detail_table = get_output_table(config, "classification_detail_final")
     topic_group_table = get_output_table(config, "topic_group")
+    active_mapping_table = get_output_table(config, "topic_active_mapping")
     create_sql = build_final_classification_view_sql(
         config,
         final_detail_exists=spark.catalog.tableExists(final_detail_table),
         topic_group_exists=spark.catalog.tableExists(topic_group_table),
+        active_mapping_exists=spark.catalog.tableExists(active_mapping_table),
     )
     try:
         object_type = spark.catalog.getTable(final_view).tableType.upper()

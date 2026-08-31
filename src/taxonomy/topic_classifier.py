@@ -1174,6 +1174,8 @@ Return strict JSON only with keys:
 - pred_topic
 - pred_topic_type
 - match_reason
+The match_reason must be a brief plain sentence. Do not use double quotes,
+newlines, JSON fragments, or copied memo text in match_reason.
 """.strip()
 
     user_prompt = f"""
@@ -1231,6 +1233,7 @@ Rules:
 - Use others only when no allowed topic is a reasonable semantic fit after considering topic
   descriptions, hints, and representative memos.
 - Prefer the most specific topic when the memo mentions a concrete function or feature.
+- Keep match_reason under 160 characters and do not use double quote characters.
 - Return JSON only.
 """.strip()
 

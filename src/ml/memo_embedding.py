@@ -69,6 +69,9 @@ def _embedding_cfg(config: dict[str, Any]) -> dict[str, Any]:
         "ml_auto_label_min_confidence_score": float(
             cfg.get("ml_auto_label_min_confidence_score", 0.9)
         ),
+        "ml_auto_label_min_similarity_margin": float(
+            cfg.get("ml_auto_label_min_similarity_margin", 0.05)
+        ),
         "include_pred_topic_types": list(
             cfg.get("include_pred_topic_types", ["topic", "overall"])
         ),
@@ -143,6 +146,7 @@ def _trusted_label_condition(
     min_confidence_score: float,
     *,
     ml_auto_min_confidence_score: float = 0.9,
+    ml_auto_min_similarity_margin: float = 0.05,
 ) -> F.Column:
     """Return stage-aware condition for embedding label inclusion.
 
@@ -175,6 +179,16 @@ def _trusted_label_condition(
     high_confidence_ml_label = (
         (stage_col == F.lit("embedding_prototype_auto_accept"))
         & (confidence_col >= float(ml_auto_min_confidence_score))
+        & (
+            # A single prototype has no competing topic. Otherwise require a
+            # clear Top-1/Top-2 gap before feeding an ML label back to training.
+            F.get_json_object(F.col("candidate_topics_json"), "$[1].similarity_score").isNull()
+            | (
+                F.get_json_object(F.col("candidate_topics_json"), "$[0].similarity_score").cast("double")
+                - F.get_json_object(F.col("candidate_topics_json"), "$[1].similarity_score").cast("double")
+                >= float(ml_auto_min_similarity_margin)
+            )
+        )
     )
 
     # Backward-compatible scored sample labels are allowed only at the old
@@ -243,6 +257,7 @@ def load_labeled_memo_df(
             _trusted_label_condition(
                 resolved_min_confidence,
                 ml_auto_min_confidence_score=cfg["ml_auto_label_min_confidence_score"],
+                ml_auto_min_similarity_margin=cfg["ml_auto_label_min_similarity_margin"],
             )
         )
     )
