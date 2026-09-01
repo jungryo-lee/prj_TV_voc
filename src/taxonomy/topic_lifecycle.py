@@ -36,6 +36,9 @@ def _cfg(config: dict[str, Any]) -> dict[str, Any]:
         "others_ratio_threshold": float(cfg.get("others_ratio_threshold", 0.15)),
         "low_topic_share_threshold": float(cfg.get("low_topic_share_threshold", 0.01)),
         "low_topic_consecutive_months": int(cfg.get("low_topic_consecutive_months", 2)),
+        "new_topic_candidate_min_distinct_memo_ids": int(
+            cfg.get("new_topic_candidate_min_distinct_memo_ids", 50)
+        ),
         "protected_topics": set(cfg.get("protected_topics", []) or []),
     }
 
