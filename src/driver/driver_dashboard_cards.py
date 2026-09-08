@@ -14,6 +14,7 @@ from datetime import datetime
 from typing import Any
 
 from pyspark.sql import SparkSession
+from pyspark.sql import functions as F
 from pyspark.sql.types import StringType, StructField, StructType, TimestampType
 
 from common.config_loader import get_output_table
@@ -200,6 +201,152 @@ def _driver_rows(models: list[dict[str, Any]], coefs: list[dict[str, Any]], cfg:
     return output
 
 
+def _placeholder_model(scope: tuple[str, str, str, str, str]) -> dict[str, Any]:
+    """Create a profile when correlation exists but WLS did not fit a model."""
+    segment_col, segment_value, group_dim, group_key, y_feature = scope
+    return {
+        "segment_col": segment_col,
+        "segment_value": segment_value,
+        "group_dim": group_dim,
+        "group_key": group_key,
+        "y_feature": y_feature,
+        "y_obs": 0,
+        "adj_r_squared": None,
+        "prob_f": None,
+        "cond_no": None,
+    }
+
+
+def _scope_driver_text(
+    route: str,
+    coefs: list[dict[str, Any]],
+    correlations: list[dict[str, Any]],
+    cfg: dict[str, Any],
+) -> str:
+    """Return one deterministic driver message for every analysis scope."""
+    valid_coefs = sorted(
+        [row for row in coefs if _valid_coef(row, cfg)],
+        key=lambda row: abs(_float(row.get("coef"))),
+        reverse=True,
+    )
+    if route in {"회귀+상관 활용", "혼합 활용"} and valid_coefs:
+        return _bullet(
+            [
+                f"{row['x_feature']}: {'긍정' if _float(row['coef']) >= 0 else '부정'} 방향, "
+                f"coef {_float(row['coef']):.2f}, 가중상관 {_float(row.get('weighted_corr')):.2f}"
+                for row in valid_coefs[:cfg["max_items"]]
+            ],
+            "유의한 회귀 Driver 없음",
+        )
+
+    valid_corrs = sorted(
+        [
+            row for row in correlations
+            if abs(_float(row.get("weighted_corr"))) >= cfg["min_abs_weighted_corr"]
+        ],
+        key=lambda row: abs(_float(row.get("weighted_corr"))),
+        reverse=True,
+    )
+    if valid_corrs:
+        return _bullet(
+            [
+                f"{row['x_feature']}: 가중상관 {_float(row.get('weighted_corr')):.2f} "
+                "(회귀 Driver 미확정)"
+                for row in valid_corrs[:cfg["max_items"]]
+            ],
+            "상관 기반 탐색 후보 없음",
+        )
+    return "• 연관된 항목 없음: 회귀계수와 가중상관 모두 해석 기준에 미달함"
+
+
+def _ensure_scope_driver_coverage(
+    drivers: list[dict[str, Any]],
+    profiles: list[tuple[dict[str, Any], list[dict[str, Any]], list[dict[str, Any]], str, list[dict[str, Any]]]],
+    cfg: dict[str, Any],
+) -> list[dict[str, Any]]:
+    """Guarantee a Tableau row for every group dimension/key/Y scope.
+
+    Existing common/differentiated rows remain intact. This adds the missing
+    per-scope row only when strict WLS selection produced no row, including
+    correlation-only and no-association cases.
+    """
+    output = list(drivers)
+    existing_index = {
+        (str(row["group_dim"]), str(row["y_feature"]), str(row["driver_type"]), str(row["group_key"])): index
+        for index, row in enumerate(output)
+    }
+    for model, scope_corr, scope_coef, route, _peers in profiles:
+        group_dim = str(model["group_dim"])
+        y_feature = "all" if group_dim == "all" else str(model["y_feature"])
+        driver_type = "공통" if group_dim == "all" else "차별"
+        group_key = "-" if group_dim == "all" else str(model["group_key"])
+        key = (group_dim, y_feature, driver_type, group_key)
+        driver = _scope_driver_text(route, scope_coef, scope_corr, cfg)
+        row = {
+            "group_dim": group_dim,
+            "y_feature": y_feature,
+            "driver_type": driver_type,
+            "group_key": group_key,
+            "analysis_route": route,
+            "driver": driver,
+            "source_hash": _digest({"route": route, "coefs": scope_coef, "correlations": scope_corr}),
+            "created_at": datetime.utcnow(),
+        }
+        if key not in existing_index:
+            output.append(row)
+            existing_index[key] = len(output) - 1
+        elif not any(_valid_coef(coef, cfg) for coef in scope_coef):
+            # A previously created differentiated row may contain only the
+            # generic "limited" text. Prefer real correlation evidence, or an
+            # explicit no-association result, when no valid WLS coefficient exists.
+            output[existing_index[key]] = row
+    return output
+
+
+def _expected_driver_scopes(
+    spark: SparkSession,
+    config: dict[str, Any],
+) -> list[tuple[str, str, str, str, str]]:
+    """Return every non-all dimension/key/Y combination present in WLS input.
+
+    WLS deliberately does not write a model row when a group has too few
+    observations or no eligible X variable.  Tableau still needs a driver-card
+    row for those combinations, so the coverage contract comes from the input
+    population rather than only from successful statistical output.
+    """
+    input_table = get_output_table(config, "driver_input")
+    if not spark.catalog.tableExists(input_table):
+        return []
+
+    driver_cfg = config.get("driver_analysis", {}) or {}
+    group_dims = [str(value) for value in driver_cfg.get("group_dims", []) or [] if str(value) != "all"]
+    segment_col = str(driver_cfg.get("segment_col") or "").strip()
+    input_df = spark.table(input_table)
+    required = {"feature_name", *group_dims}
+    if segment_col:
+        required.add(segment_col)
+    if not group_dims or not required.issubset(set(input_df.columns)):
+        return []
+
+    scopes: list[tuple[str, str, str, str, str]] = []
+    for group_dim in group_dims:
+        columns = [
+            (F.col(segment_col).cast("string") if segment_col else F.lit("all")).alias("segment_value"),
+            F.col(group_dim).cast("string").alias("group_key"),
+            F.col("feature_name").cast("string").alias("y_feature"),
+        ]
+        for row in (
+            input_df.select(*columns)
+            .where(F.col("group_key").isNotNull() & F.col("y_feature").isNotNull())
+            .dropDuplicates()
+            .collect()
+        ):
+            # WLS uses the segment column name as segment_col. When no segment
+            # is configured, it emits the fixed all/all segment scope.
+            scopes.append((segment_col or "all", str(row["segment_value"]), group_dim, str(row["group_key"]), str(row["y_feature"])))
+    return scopes
+
+
 def _summary_prompt(payload: dict[str, Any]) -> tuple[str, str]:
     system = """You are a rigorous TV product-planning analyst. Write concise Korean Tableau card text only from supplied evidence.
 Never invent statistics, drivers, causality, product facts, or comparisons. Correlation is exploratory association, not causality.
@@ -291,42 +438,87 @@ def generate_dashboard_cards(
     driver_table = get_output_table(config, "driver_card_driver")
     generation_log_table = get_output_table(config, "driver_card_generation_log")
 
-    drivers = _driver_rows(models, coefs, cfg)
-    driver_lookup = {(row["group_dim"], row["y_feature"], row["driver_type"], row["group_key"]): row["driver"] for row in drivers}
     corr_by_scope: dict[tuple[str, ...], list[dict[str, Any]]] = defaultdict(list)
     coef_by_scope: dict[tuple[str, ...], list[dict[str, Any]]] = defaultdict(list)
+    model_by_scope: dict[tuple[str, ...], dict[str, Any]] = {}
     for row in correlations:
         corr_by_scope[_scope(row)].append(row)
     for row in coefs:
         coef_by_scope[_scope(row)].append(row)
+    for row in models:
+        model_by_scope[_scope(row)] = row
 
     profiles: list[tuple[dict[str, Any], list[dict[str, Any]], list[dict[str, Any]], str, list[dict[str, Any]]]] = []
-    for model in models:
-        if str(model.get("group_dim")) == "all":
-            continue
-        group_dim, y_feature, group_key = str(model["group_dim"]), str(model["y_feature"]), str(model["group_key"])
+    # WLS model rows do not exist when no X passed correlation selection. Use
+    # the union of model/correlation/coefficient scopes so Tableau still gets a
+    # row explaining correlation-only or no-association cases.
+    non_all_scopes = sorted(
+        {
+            scope
+            for scope in set(model_by_scope) | set(corr_by_scope) | set(coef_by_scope)
+            if scope[2] != "all"
+        }
+    )
+    for scope in non_all_scopes:
+        model = model_by_scope.get(scope, _placeholder_model(scope))
+        group_dim, y_feature, group_key = scope[2], scope[4], scope[3]
         if target_group_dims and group_dim not in target_group_dims:
             continue
         if target_y_features and y_feature not in target_y_features:
             continue
         if target_group_keys and group_key not in target_group_keys:
             continue
-        scope = _scope(model)
-        peers = [row for row in models if str(row.get("segment_col")) == str(model.get("segment_col")) and str(row.get("segment_value")) == str(model.get("segment_value")) and str(row.get("group_dim")) == group_dim and str(row.get("y_feature")) == y_feature]
+        peers = [
+            row for row in models
+            if str(row.get("segment_col")) == scope[0]
+            and str(row.get("segment_value")) == scope[1]
+            and str(row.get("group_dim")) == group_dim
+            and str(row.get("y_feature")) == y_feature
+        ]
         profiles.append((model, corr_by_scope[scope], coef_by_scope[scope], _route(model, corr_by_scope[scope], cfg), peers))
 
     if not target_group_dims or "all" in target_group_dims:
         all_models = [row for row in models if str(row.get("group_dim")) == "all"]
-        if all_models:
-            representative = max(all_models, key=lambda row: _float(row.get("adj_r_squared"), -1.0))
-            all_corr = [row for row in correlations if str(row.get("group_dim")) == "all"]
+        all_corr = [row for row in correlations if str(row.get("group_dim")) == "all"]
+        if all_models or all_corr:
+            representative = (
+                max(all_models, key=lambda row: _float(row.get("adj_r_squared"), -1.0))
+                if all_models
+                else _placeholder_model(("N", "N", "all", "all", "all"))
+            )
             valid_count = sum(_valid_model(row, cfg) for row in all_models)
-            route = "회귀+상관 활용" if valid_count == len(all_models) else ("혼합 활용" if valid_count else ("상관 기반 탐색" if all_corr else "해석 보류"))
+            route = "회귀+상관 활용" if all_models and valid_count == len(all_models) else ("혼합 활용" if valid_count else ("상관 기반 탐색" if all_corr else "해석 보류"))
             profiles.append((representative, all_corr, [row for row in coefs if str(row.get("group_dim")) == "all"], route, all_models))
 
     profiles.sort(key=lambda item: (str(item[0].get("group_dim")), str(item[0].get("y_feature")), str(item[0].get("group_key"))))
     if max_profiles is not None:
         profiles = profiles[:max_profiles]
+
+    # Keep LLM generation scoped to available statistical profiles, but make
+    # the deterministic driver mart exhaustive from the actual WLS input. This
+    # prevents a missing model row from making a Tableau y_feature disappear.
+    coverage_profiles = list(profiles)
+    covered_scopes = {_scope(model) for model, *_rest in coverage_profiles if str(model.get("group_dim")) != "all"}
+    for scope in _expected_driver_scopes(spark, config):
+        if scope in covered_scopes:
+            continue
+        coverage_profiles.append((
+            _placeholder_model(scope),
+            corr_by_scope.get(scope, []),
+            coef_by_scope.get(scope, []),
+            _route(_placeholder_model(scope), corr_by_scope.get(scope, []), cfg),
+            [],
+        ))
+
+    drivers = _ensure_scope_driver_coverage(
+        _driver_rows(models, coefs, cfg),
+        coverage_profiles,
+        cfg,
+    )
+    driver_lookup = {
+        (row["group_dim"], row["y_feature"], row["driver_type"], row["group_key"]): row["driver"]
+        for row in drivers
+    }
 
     existing = _existing_by_hash(spark, insight_table) if cfg["reuse_unchanged"] else {}
     llm = get_llm_client(config=config, model_key=cfg["model_key"])
